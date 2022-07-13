@@ -107,7 +107,7 @@ public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max
 	CreateNative("IsBeaconPlayer1", Native_Player1);
 	CreateNative("IsBeaconPlayer2", Native_Player2);
 	
-	RegPluginLibrary("healbeacon");
+	RegPluginLibrary("HealBeacon");
 	
 	return APLRes_Success;
 }
