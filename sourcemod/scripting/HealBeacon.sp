@@ -172,7 +172,6 @@ public Action Event_RoundStart(Event event, const char[] name, bool dontBroadcas
 			g_bMaxHealth[i] = true;
 			g_bHasNeon[i] = false;
 			SetEntProp(i, Prop_Data, "m_iMaxHealth", 120);
-			if(IsPlayerRandom(i))
 		}
 	}
 	
