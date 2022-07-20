@@ -9,8 +9,7 @@
 #include <multicolors>
 #include <zombiereloaded>
 #include <adminmenu>
-#include <Healbeacon>
-#include <commandfilters>
+#include <HealBeacon>
 
 #define PLUGIN_DESCRIPTION "Sets beacon to 2 random players and damage whoever is far from them"
 #define PLUGIN_PREFIX "{fullred}[Heal Beacon] {white}"
@@ -19,10 +18,6 @@ int g_LaserSprite = -1;
 int g_HaloSprite = -1;
 
 int g_BeaconPlayer[MAXPLAYERS+1] =  { 0, ... };
-
-int g_iRandom1 = -1;
-int g_iRandom2 = -1;
-
 int EntityPointHurt = -1;
 int g_iNeon[MAXPLAYERS+1] = {-1, ...};
 int g_iClientBeaconColor[MAXPLAYERS+1][4];
@@ -30,7 +25,7 @@ int g_iClientNeonColor[MAXPLAYERS+1][4];
 int g_iHealth[MAXPLAYERS+1] = -1;
 
 
-float g_iClientDistance[MAXPLAYERS+1] = {1.0, ...};
+float g_fClientDistance[MAXPLAYERS+1] = {1.0, ...};
 
 
 int iCount[MAXPLAYERS+1] = {0, ...};
@@ -47,6 +42,7 @@ int g_ColorYellow[4] =  {255, 255, 0, 255};
 int g_ColorCyan[4] =  {0, 255, 255, 255};
 int g_ColorGold[4] =  {255, 215, 0, 255};
 
+int iRandomsCount;
 
 bool g_bRoundStart;
 bool g_bIsDone;
@@ -54,11 +50,14 @@ bool g_bHasNeon[MAXPLAYERS+1];
 bool g_bModeIsEnabled;
 bool g_bMaxHealth[MAXPLAYERS+1];
 bool g_bNoBeacon;
+bool g_bIsClientRandom[MAXPLAYERS+1];
+bool g_bCloseToBeacon[MAXPLAYERS+1];
 
 ConVar g_cvEnabled;
 ConVar g_cvTimer;
 ConVar g_cvDamage;
 ConVar g_cvLifeTime;
+ConVar g_cvRandoms;
 
 Handle BeaconTimer[MAXPLAYERS+1] = {INVALID_HANDLE, ...};
 Handle DistanceTimerHandle[MAXPLAYERS + 1] =  {INVALID_HANDLE, ...};
@@ -67,16 +66,8 @@ Handle g_hRoundStart_Timer = INVALID_HANDLE;
 Handle g_hHudTimer[MAXPLAYERS+1] = {INVALID_HANDLE, ...};
 Handle g_hDistanceTimer[MAXPLAYERS+1] = {INVALID_HANDLE, ...};
 Handle g_hRoundEndTimer = INVALID_HANDLE;
+Handle g_hRandomsTimer = INVALID_HANDLE;
 
-
-public Plugin myinfo = 
-{
-	name = "HealBeacon",
-	author = "Dolly, Thanks to Ire",
-	description = PLUGIN_DESCRIPTION,
-	version = "1.102",
-	url = "https://nide.gg"
-};
 
 public void OnPluginStart()
 {
@@ -84,8 +75,10 @@ public void OnPluginStart()
 	g_cvTimer = CreateConVar("sm_beacon_timer", "20.0", "The time that will start picking random players at round start");
 	g_cvDamage = CreateConVar("sm_beacon_damage", "5", "The damage that the heal beacon will give");
 	g_cvLifeTime = CreateConVar("sm_beacon_lifetime", "1.0", "Life time of the beacon");
+	g_cvRandoms = CreateConVar("sm_healbeacon_randoms", "2", "How many random players should get the heal beacon");
 	
 	g_cvEnabled.AddChangeHook(OnConVarChange);
+	g_cvRandoms.AddChangeHook(OnRandomsConVarChange);
 	
 	HookEvent("round_start", Event_RoundStart);
 	HookEvent("round_end", Event_RoundEnd);
@@ -94,7 +87,10 @@ public void OnPluginStart()
 	
 	RegAdminCmd("sm_healbeacon", Command_Menu, ADMFLAG_BAN, "Shows healbeacon menu");
 	RegAdminCmd("sm_beacon_distance", Command_Distance, ADMFLAG_CONVARS, "Change beacon distance");
-	RegAdminCmd("sm_sethealbeacon", Command_SetHealBeacon, ADMFLAG_BAN, "Set a heal beacon player to someone else");
+	RegAdminCmd("sm_replacebeacon", Command_ReplaceBeacon, ADMFLAG_BAN, "Replace an already heal beaconed player with another one");
+	RegAdminCmd("sm_addnewbeacon", Command_AddNewBeacon, ADMFLAG_BAN, "Add a new heal beaconed player");
+	RegAdminCmd("sm_removebeacon", Command_RemoveBeacon, ADMFLAG_BAN, "Remove heal beacon player");
+	RegAdminCmd("sm_checkdistance", Command_CheckDistance, ADMFLAG_BAN, "...");
 	
 	g_HudMsg = CreateHudSynchronizer();
 	SetHudTextParams(-1.0, 0.2, 1.0, 0, 255, 255, 255);
@@ -104,22 +100,18 @@ public void OnPluginStart()
 
 public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max)
 {
-	CreateNative("IsBeaconPlayer1", Native_Player1);
-	CreateNative("IsBeaconPlayer2", Native_Player2);
+	CreateNative("IsPlayerRandom", Native_Player);
 	
 	RegPluginLibrary("HealBeacon");
 	
 	return APLRes_Success;
 }
 
-public int Native_Player1(Handle plugin, int numParams)
+public int Native_Player(Handle plugin, int params)
 {
-	return g_iRandom1;
-}
-
-public int Native_Player2(Handle plugin, int numParams)
-{
-	return g_iRandom2;
+	int client = GetNativeCell(1);
+	
+	return g_bIsClientRandom[client];
 }
 
 public void OnConVarChange(ConVar convar, char[] oldValue, char[] newValue)
@@ -134,54 +126,18 @@ public void OnConVarChange(ConVar convar, char[] oldValue, char[] newValue)
 	}
 }
 
+public void OnRandomsConVarChange(ConVar convar, char[] oldValue, char[] newValue)
+{
+	if(StringToInt(newValue) > 5 || StringToInt(newValue) <= 0)
+	{
+		g_cvRandoms.IntValue = 2;
+	}
+}
+
 public void OnMapStart()
 {
 	g_LaserSprite = PrecacheModel("sprites/laser.vmt");
 	g_HaloSprite = PrecacheModel("materials/sprites/halo.vtf");
-}
-
-public void OnClientPostAdminCheck(int client)
-{
-	g_iHealth[client] = 0;
-	ResetValues(client);
-}
-
-public void OnClientDisconnect(int client)
-{
-	if(client == g_iRandom1)
-	{
-		if(g_iRandom2 == -1)
-		{
-			CPrintToChatAll("%sPlayer %N has disconnected with the heal beacon.", PLUGIN_PREFIX, g_iRandom1);
-			g_iRandom1 = -1;
-			EndRound();
-		}
-		else
-		{
-			CPrintToChatAll("%sPlayer %N has disconnected with the heal beacon.", PLUGIN_PREFIX, g_iRandom1);
-			g_iRandom1 = -1;
-		}
-	}
-	else if(client == g_iRandom2)
-	{
-		if(g_iRandom1 == -1)
-		{
-			CPrintToChatAll("%sPlayer %N has disconnected with the heal beacon.", PLUGIN_PREFIX, g_iRandom2);
-			g_iRandom2 = -1;
-			EndRound();
-		}
-		else
-		{
-			CPrintToChatAll("%sPlayer %N has disconnected with the heal beacon.", PLUGIN_PREFIX, g_iRandom2);
-			g_iRandom2 = -1;
-		}
-	}
-	
-	g_iHealth[client] = 0;
-	
-	DeleteAllHandles(client);
-	
-	ResetValues(client);
 }
 
 public Action Event_RoundStart(Event event, const char[] name, bool dontBroadcast)
@@ -193,7 +149,14 @@ public Action Event_RoundStart(Event event, const char[] name, bool dontBroadcas
 	g_bModeIsEnabled = false;
 	
 	g_bNoBeacon = false;
-		
+	
+	iRandomsCount = 0;
+	
+	g_hRandomsTimer = null;
+	
+	if(g_hRandomsTimer != INVALID_HANDLE)
+		delete g_hRandomsTimer;
+	
 	for(int i = 1; i <= MaxClients; i++)
 	{
 		if(IsValidClient(i))
@@ -201,14 +164,18 @@ public Action Event_RoundStart(Event event, const char[] name, bool dontBroadcas
 			DeleteAllHandles(i);
 			RemoveNeon(i);
 			ResetValues(i);
-			g_iClientDistance[i] = 400.0;
+			g_fClientDistance[i] = 400.0;
 			g_BeaconPlayer[i] = 0;
 			g_iClientBeaconColor[i] = g_BeaconColor;
+			g_bIsClientRandom[i] = false;
 			g_iHealth[i] = 0;
 			g_bMaxHealth[i] = true;
 			g_bHasNeon[i] = false;
 			SetEntProp(i, Prop_Data, "m_iMaxHealth", 120);
-			
+			if(IsPlayerRandom(i))
+			{
+				PrintToChatAll("aaaaaaaa");
+			}
 		}
 	}
 	
@@ -221,40 +188,28 @@ public Action Event_RoundEnd(Event event, const char[] name, bool dontBroadcast)
 {
 	if(g_bRoundStart)
 	{
-		if(g_iRandom1 != -1)
-		{
-			g_BeaconPlayer[g_iRandom1] = 0;
-			g_iRandom1 = -1;
-		}
-			
-		if(g_iRandom2 != -1)
-		{
-			g_BeaconPlayer[g_iRandom2] = 0;
-			g_iRandom2 = -1;
-		}	
-			
 		g_bRoundStart = false;
 					
 		for (int i = 1; i <= MaxClients; i++)
 		{
 			if(IsValidClient(i))
 				DeleteAllHandles(i);
-		}
-			
-		
+				
+			if(IsValidClient(i) && g_bIsClientRandom[i])
+				g_bIsClientRandom[i] = false;
+		}	
+				
 		g_hRoundStart_Timer = null;
-		
+		g_hRoundEndTimer = null;
 		
 		if(g_hRoundStart_Timer != INVALID_HANDLE)
 			delete g_hRoundStart_Timer;
-	
-	
-		g_hRoundEndTimer = null;
-		
+
 		if(g_hRoundEndTimer != INVALID_HANDLE)
-			delete g_hRoundEndTimer;
-			
+			delete g_hRoundEndTimer;		
 	}
+	
+	EntityPointHurt = -1;
 	
 	return Plugin_Continue;
 }
@@ -262,43 +217,17 @@ public Action Event_RoundEnd(Event event, const char[] name, bool dontBroadcast)
 public Action Event_PlayerDeath(Event event, const char[] name, bool dontBroadcast)
 {
 	int client = GetClientOfUserId(GetEventInt(event, "userid"));
-	if(IsValidClient(client))
+	
+	if(IsValidClient(client) && g_bIsClientRandom[client] && GetCurrentRandoms() >= 1)
 	{
-		if(client == g_iRandom1)
-		{
-			if(g_iRandom2 == -1)
-			{
-				CPrintToChatAll("%s%N has died with the heal beacon", PLUGIN_PREFIX, g_iRandom1);
-				g_iRandom1 = -1;
-				EndRound();
-			}
-			else
-			{			
-				CPrintToChatAll("%s%N has died with the heal beacon", PLUGIN_PREFIX, g_iRandom1);
-				g_iRandom1 = -1;
-			}
-		}
-		else if(client == g_iRandom2)
-		{
-			if(g_iRandom1 == -1)
-			{
-				CPrintToChatAll("%s%N has died with the heal beacon", PLUGIN_PREFIX, g_iRandom2);
-				g_iRandom2 = -1;
-				EndRound();
-			}
-			else
-			{			
-				CPrintToChatAll("%s%N has died with the heal beacon", PLUGIN_PREFIX, g_iRandom2);
-				g_iRandom2 = -1;
-			}
-		}
-		
-		RemoveNeon(client);
-		
-		if(BeaconTimer[client] != INVALID_HANDLE)
-			delete BeaconTimer[client];
-			
-		BeaconTimer[client] = null;
+		RemoveRandom(client);
+		CPrintToChatAll("%sPlayer %N has died with the heal beacon", PLUGIN_PREFIX, client);
+	}
+	else if(IsValidClient(client) && g_bIsClientRandom[client] && GetCurrentRandoms() <= 0)
+	{
+		RemoveRandom(client);
+		CPrintToChatAll("%sPlayer %N has died with the heal beacon", PLUGIN_PREFIX, client);
+		EndRound();
 	}
 	
 	return Plugin_Continue;
@@ -309,36 +238,17 @@ public Action Event_PlayerTeam(Event event, const char[] name, bool dontBroadcas
 	int client = GetClientOfUserId(GetEventInt(event, "userid"));
 	int newteam = GetEventInt(event, "team");
 	
-	if(IsValidClient(client) && client == g_iRandom1 && newteam == 1)
+	if(IsValidClient(client) && g_bIsClientRandom[client] && newteam == 1 && GetCurrentRandoms() >= 1)
 	{
-		if(g_iRandom2 == -1)
-		{
-			CPrintToChatAll("%s%N has moved to the Spec team with the heal beacon", PLUGIN_PREFIX, g_iRandom1);
-			g_iRandom1 = -1;
-			EndRound();
-		}
-		else
-		{
-			CPrintToChatAll("%s%N has moved to the Spec team with the heal beacon", PLUGIN_PREFIX, g_iRandom1);
-			g_iRandom1 = -1;
-		}
+		RemoveRandom(client);
+		CPrintToChatAll("%s%N has moved to the Spec team with the heal beacon", PLUGIN_PREFIX, client);
 	}
-
-	else if(IsValidClient(client) && client == g_iRandom2 && newteam == 1)
+	else if(IsValidClient(client) && g_bIsClientRandom[client] && newteam == 1 && GetCurrentRandoms() <= 0)
 	{
-		if(g_iRandom1 == -1)
-		{
-			CPrintToChatAll("%s%N has moved to the Spec team with the heal beacon", PLUGIN_PREFIX, g_iRandom2);
-			g_iRandom2 = -1;
-			EndRound();
-		}
-		else
-		{
-			CPrintToChatAll("%s%N has moved to the Spec team with the heal beacon", PLUGIN_PREFIX, g_iRandom2);
-			g_iRandom2 = -1;
-		}
+		RemoveRandom(client);
+		CPrintToChatAll("%s%N has moved to the Spec team with the heal beacon", PLUGIN_PREFIX, client);
+		EndRound();
 	}
-
 	
 	return Plugin_Continue;
 }
@@ -347,9 +257,15 @@ public Action RoundStart_Timer(Handle timer)
 {
 	if(GetConVarBool(g_cvEnabled))
 	{
-		GetFirstRandom();
-		
-		GetSecondRandom();
+	
+		if(g_cvRandoms.IntValue == 1)
+		{
+			GetRandomPlayers();
+		}
+		else
+		{
+			g_hRandomsTimer = CreateTimer(1.0, RandomsTimer, _, TIMER_REPEAT);
+		}
 		
 
 		for (int i = 1; i <= MaxClients; i++)
@@ -390,6 +306,21 @@ public Action Hud_Counter(Handle timer, int clientserial)
 	return Plugin_Continue;
 }
 
+public Action RandomsTimer(Handle timer)
+{
+	GetRandomPlayers();
+	
+	iRandomsCount++;
+	
+	if(iRandomsCount >= g_cvRandoms.IntValue)
+	{
+		g_hRandomsTimer = null;
+		return Plugin_Stop;
+	}
+	
+	return Plugin_Continue;
+}
+
 public Action Distance_Timer(Handle timer, int clientserial)
 {
 	int client = GetClientFromSerial(clientserial);
@@ -404,156 +335,79 @@ public Action DistanceChecker_Timer(Handle timer, int clientserial)
 {
 	int client = GetClientFromSerial(clientserial);
 	
-	if(client == g_iRandom1)
+	if(g_bIsClientRandom[client])
 		return Plugin_Handled;
-		
-	if(client == g_iRandom2)
-		return Plugin_Handled;
-		
 	
-	if(!g_bModeIsEnabled)
-	{
+	if(GetCurrentRandoms() >= 1)
+	{	
+		ArrayList g_aRandomPlayers = new ArrayList();
+		g_aRandomPlayers.Clear();
+		
+		for (int random = 1; random <= MaxClients; random++)
+		{
+			if(IsClientRandom(random))
+			{
+				g_aRandomPlayers.Push(random);
+			}
+		}
+		
+		g_bCloseToBeacon[client] = false;
+	
+			
 		if(IsValidClient(client) && IsPlayerAlive(client) && GetClientTeam(client) == 3)
 		{
-			if(g_iRandom1 != -1 && g_iRandom2 == -1)
+			if(!g_bModeIsEnabled)
 			{
-				if(GetDistanceBetween(client, g_iRandom1) > g_iClientDistance[g_iRandom1] - 155.0)
-				{
-					g_iHealth[client] = GetEntProp(client, Prop_Send, "m_iHealth");
-					ShowSyncHudText(client, g_HudMsg, "WARNING: YOU ARE TOO FAR AWAY FROM THE BEACONED PLAYERS PLEASE GET CLOSER TO THEM");
-					DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
-					g_bMaxHealth[client] = false;
-				}
-				else if(GetDistanceBetween(client, g_iRandom1) < g_iClientDistance[g_iRandom1] - 155.0000)
-				{
-					if(!g_bMaxHealth[client])
-					{
-						if(GetEntProp(client, Prop_Send, "m_iHealth") < GetEntProp(client, Prop_Data, "m_iMaxHealth"))
-						{
-							SetEntProp(client, Prop_Send, "m_iHealth", GetEntProp(client, Prop_Send, "m_iHealth") + 1);
+				if(GetCurrentRandoms() == 1)					
+					CheckDistanceForNoMode(client, g_aRandomPlayers.Get(0));
 						
-							if(GetEntProp(client, Prop_Send, "m_iHealth") == GetEntProp(client, Prop_Data, "m_iMaxHealth"))
-							{
-								g_bMaxHealth[client] = true;
-							}
-						}
+				else if(GetCurrentRandoms() == 2)
+					CheckDistanceForNoModeForTwo(client, g_aRandomPlayers.Get(0), g_aRandomPlayers.Get(1));
 						
-					}
-				}
+				else if(GetCurrentRandoms() == 3)
+					CheckDistanceForNoModeForThree(client, g_aRandomPlayers.Get(0), g_aRandomPlayers.Get(1), g_aRandomPlayers.Get(2));
+						
+				else if(GetCurrentRandoms() == 4)
+					CheckDistanceForNoModeForFour(client, g_aRandomPlayers.Get(0), g_aRandomPlayers.Get(1), g_aRandomPlayers.Get(2), g_aRandomPlayers.Get(3));
+						
+				else if(GetCurrentRandoms() == 5)
+					CheckDistanceForNoModeForFive(client, g_aRandomPlayers.Get(0), g_aRandomPlayers.Get(1), g_aRandomPlayers.Get(2), g_aRandomPlayers.Get(3), g_aRandomPlayers.Get(4));
 			}
-			else if(g_iRandom1 == -1 && g_iRandom2 != -1)
+			else
 			{
-				if(GetDistanceBetween(client, g_iRandom2) > g_iClientDistance[g_iRandom2] - 155.0000)
-				{
-					g_iHealth[client] = GetEntProp(client, Prop_Send, "m_iHealth");
+				if(GetCurrentRandoms() == 1)					
+					CheckDistanceForMode(client, g_aRandomPlayers.Get(0));
+						
+				else if(GetCurrentRandoms() == 2)
+					CheckDistanceForModeForTwo(client, g_aRandomPlayers.Get(0), g_aRandomPlayers.Get(1));
+						
+				else if(GetCurrentRandoms() == 3)
+					CheckDistanceForModeForThree(client, g_aRandomPlayers.Get(0), g_aRandomPlayers.Get(1), g_aRandomPlayers.Get(2));
 					
-					ShowSyncHudText(client, g_HudMsg, "WARNING: YOU ARE TOO FAR AWAY FROM THE BEACONED PLAYERS PLEASE GET CLOSER TO THEM");
-					DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
-					g_bMaxHealth[client] = false;
-				}
-				else if(GetDistanceBetween(client, g_iRandom2) < g_iClientDistance[g_iRandom2] - 155.0000)
-				{
-					if(!g_bMaxHealth[client])
-					{
-						if(GetEntProp(client, Prop_Send, "m_iHealth") < GetEntProp(client, Prop_Data, "m_iMaxHealth"))
-						{
-							SetEntProp(client, Prop_Send, "m_iHealth", GetEntProp(client, Prop_Send, "m_iHealth") + 1);
-							
-							if(GetEntProp(client, Prop_Send, "m_iHealth") == GetEntProp(client, Prop_Data, "m_iMaxHealth"))
-							{
-								g_bMaxHealth[client] = true;
-							}
-						}
-					}
-				}				
-			}
-			else if(g_iRandom1 != -1 && g_iRandom2 != -1)
-			{
-				if(GetDistanceBetween(client, g_iRandom1) > g_iClientDistance[g_iRandom1] - 155.0000 && GetDistanceBetween(client, g_iRandom2) > g_iClientDistance[g_iRandom2] - 155.0000)
-				{
-					g_iHealth[client] = GetEntProp(client, Prop_Send, "m_iHealth");
-					ShowSyncHudText(client, g_HudMsg, "WARNING: YOU ARE TOO FAR AWAY FROM THE BEACONED PLAYERS PLEASE GET CLOSER TO THEM");
-					DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
-					g_bMaxHealth[client] = false;
-				}
-				else if(GetDistanceBetween(client, g_iRandom1) < g_iClientDistance[g_iRandom1] - 155.0000 || GetDistanceBetween(client, g_iRandom2) < g_iClientDistance[g_iRandom2] - 155.0000)
-				{
-					if(!g_bMaxHealth[client])
-					{
-						if(GetEntProp(client, Prop_Send, "m_iHealth") < GetEntProp(client, Prop_Data, "m_iMaxHealth"))
-						{
-							SetEntProp(client, Prop_Send, "m_iHealth", GetEntProp(client, Prop_Send, "m_iHealth") + 1);
+				else if(GetCurrentRandoms() == 4)
+					CheckDistanceForModeForFour(client, g_aRandomPlayers.Get(0), g_aRandomPlayers.Get(1), g_aRandomPlayers.Get(2), g_aRandomPlayers.Get(3));
 						
-							if(GetEntProp(client, Prop_Send, "m_iHealth") == GetEntProp(client, Prop_Data, "m_iMaxHealth"))
-							{
-								g_bMaxHealth[client] = true;
-							}
-						}
-					}
-				}
-			}
-			else if(g_iRandom1 == -1 && g_iRandom2 == -1)
-			{
-				DistanceTimerHandle[client] = null;
-				return Plugin_Stop;
+				else if(GetCurrentRandoms() == 5)
+					CheckDistanceForModeForFive(client, g_aRandomPlayers.Get(0), g_aRandomPlayers.Get(1), g_aRandomPlayers.Get(2), g_aRandomPlayers.Get(3), g_aRandomPlayers.Get(4));
 			}
 		}
-	}
-	else
-	{
-		if(IsValidClient(client) && IsPlayerAlive(client) && GetClientTeam(client) == 3)
+		else if(!IsValidClient(client))
 		{
-			if(g_iRandom1 != -1 && g_iRandom2 == -1)
-			{
-				if(GetDistanceBetween(client, g_iRandom1) > g_iClientDistance[g_iRandom1] - 155.0000)
-				{
-					ShowSyncHudText(client, g_HudMsg, "WARNING: YOU ARE TOO FAR AWAY FROM THE BEACONED PLAYERS PLEASE GET CLOSER TO THEM");
-					DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
-				}
-			}
-			else if(g_iRandom1 == -1 && g_iRandom2 != -1)
-			{
-				if(GetDistanceBetween(client, g_iRandom2) > g_iClientDistance[g_iRandom2] - 155.0000)
-				{
-					ShowSyncHudText(client, g_HudMsg, "WARNING: YOU ARE TOO FAR AWAY FROM THE BEACONED PLAYERS PLEASE GET CLOSER TO THEM");
-					DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
-				}			
-			}
-			else if(g_iRandom1 != -1 && g_iRandom2 != -1)
-			{
-				if(GetDistanceBetween(client, g_iRandom1) > g_iClientDistance[g_iRandom1] - 155.0000 && GetDistanceBetween(client, g_iRandom2) > g_iClientDistance[g_iRandom2] - 155.0000)
-				{
-					ShowSyncHudText(client, g_HudMsg, "WARNING: YOU ARE TOO FAR AWAY FROM THE BEACONED PLAYERS PLEASE GET CLOSER TO THEM");
-					DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
-				}
-			}
-			else if(g_iRandom1 == -1 && g_iRandom2 == -1)
-			{
-				DistanceTimerHandle[client] = null;
-				return Plugin_Stop;
-			}
+			DistanceTimerHandle[client] = null;
+			return Plugin_Stop;
 		}
+		
+		delete g_aRandomPlayers;
 	}
-	
-	if(!IsValidClient(client))
+	else if(GetCurrentRandoms() <= 0)
 	{
 		DistanceTimerHandle[client] = null;
 		return Plugin_Stop;
-	}
+	}				
 		
 	return Plugin_Continue;
 }
-
-public Action Beacon_Timer(Handle timer, int clientserial)
-{
-	int client = GetClientFromSerial(clientserial);
-	
-	if(IsValidClient(client) && IsPlayerAlive(client) && GetClientTeam(client) == 3)
-		BeaconPlayer(client);
-		
-	return Plugin_Handled;
-}
-
+						
 public Action Command_Menu(int client, int args)
 {
 	if(GetConVarBool(g_cvEnabled))
@@ -571,28 +425,23 @@ public Action Command_Menu(int client, int args)
 				
 				if(args < 1)
 				{
-					DisplayBeaconMenu(client);
+					DisplayHealBeaconMenu(client);
 					return Plugin_Handled;
 				}
 				
 				char buffer[14];
 				GetCmdArg(1, buffer, sizeof(buffer));
 				
-				int arg1 = StringToInt(buffer);
+				int g_iTarget = FindTarget(client, buffer, false, false);
 				
-				if(arg1 == 1 && g_iRandom1 != -1)
+				if(IsValidClient(g_iTarget) && g_bIsClientRandom[g_iTarget])
 				{
-					DisplayMenuForFirst(client);
-					return Plugin_Handled;
-				}
-				else if(arg1 == 2 && g_iRandom2 != -1)
-				{
-					DisplayMenuForSecond(client);
+					DisplayActionsMenu(client, g_iTarget);
 					return Plugin_Handled;
 				}
 				else
 				{
-					CReplyToCommand(client, "%sInvalid number or arguement, Accepted numbers are only 1 and 2.", PLUGIN_PREFIX);
+					CReplyToCommand(client, "%sInvalid Player or arguement, Please put the current heal beaconed players", PLUGIN_PREFIX);
 					return Plugin_Handled;
 				}
 			}
@@ -632,7 +481,7 @@ public Action Command_Distance(int client, int args)
 				
 				if(args < 2)
 				{
-					CReplyToCommand(client, "%sUsage: sm_beacon_distance <1|2> <number>", PLUGIN_PREFIX);
+					CReplyToCommand(client, "%sUsage: sm_beacon_distance <playername> <number>", PLUGIN_PREFIX);
 					return Plugin_Handled;
 				}
 				
@@ -641,29 +490,15 @@ public Action Command_Distance(int client, int args)
 				GetCmdArg(1, arg1, sizeof(arg1));
 				GetCmdArg(2, arg2, sizeof(arg2));
 				
-				int num1 = StringToInt(arg1);
+				int g_iTarget = FindTarget(client, arg1, false, false);
 				float num2 = StringToFloat(arg2);
 				
-				if(num1 == 1)
+				if(IsValidClient(g_iTarget))
 				{	
-					if(g_iRandom1 != -1)
+					if(g_bIsClientRandom[g_iTarget])
 					{
-						g_iClientDistance[g_iRandom1] = num2;
-						CReplyToCommand(client, "%sSuccessfully changed {yellow}%N distance to {white}%f.", PLUGIN_PREFIX, g_iRandom1, num2);
-						return Plugin_Handled;
-					}
-					else
-					{
-						CReplyToCommand(client, "%sPlayer is dead or left the game", PLUGIN_PREFIX);
-						return Plugin_Handled;
-					}
-				}
-				else if(num1 == 2)
-				{
-					if(g_iRandom2 != -1)
-					{
-						g_iClientDistance[g_iRandom2] = num2;
-						CReplyToCommand(client, "%sSuccessfully changed {yellow}%N distance to {white}%f.", PLUGIN_PREFIX, g_iRandom2, num2);
+						g_fClientDistance[g_iTarget] = num2;
+						CReplyToCommand(client, "%sSuccessfully changed {yellow}%N distance to {white}%f.", PLUGIN_PREFIX, g_iTarget, num2);
 						return Plugin_Handled;
 					}
 					else
@@ -674,7 +509,7 @@ public Action Command_Distance(int client, int args)
 				}
 				else
 				{
-					CReplyToCommand(client, "%sUsage: sm_beacon_distance <1|2> <number>", PLUGIN_PREFIX);
+					CReplyToCommand(client, "%sUsage: sm_beacon_distance <HealBeaconed Player> <number>", PLUGIN_PREFIX);
 					return Plugin_Handled;
 				}
 			}
@@ -697,7 +532,7 @@ public Action Command_Distance(int client, int args)
 	}
 }
 
-public Action Command_SetHealBeacon(int client, int args)
+public Action Command_ReplaceBeacon(int client, int args)
 {
 	if(GetConVarBool(g_cvEnabled))
 	{
@@ -707,7 +542,7 @@ public Action Command_SetHealBeacon(int client, int args)
 			{
 				if(args < 2)
 				{
-					CReplyToCommand(client, "%sUsage: sm_sethealbeacon 1|2 <Player>", PLUGIN_PREFIX);
+					CReplyToCommand(client, "%sUsage: sm_replacebeacon <HealBeacon Player> <Player>", PLUGIN_PREFIX);
 					return Plugin_Handled;
 				}
 				
@@ -718,7 +553,7 @@ public Action Command_SetHealBeacon(int client, int args)
 				GetCmdArg(1, sArg1, 20);
 				GetCmdArg(2, sArg2, 60);
 				
-				int num = StringToInt(sArg1);
+				int g_iRandomTarget = FindTarget(client, sArg1, false, false);
 				int g_iTarget = FindTarget(client, sArg2, false, false);
 				
 				if(g_iTarget == -1)
@@ -726,36 +561,23 @@ public Action Command_SetHealBeacon(int client, int args)
 					return Plugin_Handled;
 				}
 				
-				if(g_iTarget == g_iRandom1 || g_iTarget == g_iRandom2)
+				if(IsValidClient(g_iTarget) && g_bIsClientRandom[g_iTarget])
 				{
 					CReplyToCommand(client, "%sThe given player is already a beaconed player", PLUGIN_PREFIX);
 					return Plugin_Handled;
 				}
 				
-				if(GetClientUserId(g_iTarget) == 0)
+				if(GetClientUserId(g_iTarget) == 0 || GetClientUserId(g_iRandomTarget) == 0)
 				{
 					CReplyToCommand(client, "%sPlayer no longer available", PLUGIN_PREFIX);
 					return Plugin_Handled;
 				}
 				
-				if(num == 1)
+				if(IsValidClient(g_iRandomTarget) && g_bIsClientRandom[g_iRandomTarget])
 				{
 					if(IsValidClient(g_iTarget) && IsPlayerAlive(g_iTarget) && GetClientTeam(g_iTarget) == 3)
 					{
-						ApplyHealBeacon(g_iTarget, g_iRandom1);
-						return Plugin_Handled;
-					}
-					else if(IsValidClient(g_iTarget) && !IsPlayerAlive(g_iTarget) || GetClientTeam(g_iTarget) < 3)
-					{
-						CReplyToCommand(client, "%sCannot choose a dead player or zombie", PLUGIN_PREFIX);
-						return Plugin_Handled;
-					}
-				}
-				else if(num == 2)
-				{
-					if(IsValidClient(g_iTarget) && IsPlayerAlive(g_iTarget) && GetClientTeam(g_iTarget) == 3)
-					{
-						ApplyHealBeacon(g_iTarget, g_iRandom2);
+						ApplyHealBeacon(client, g_iRandomTarget, g_iTarget);
 						return Plugin_Handled;
 					}
 					else if(IsValidClient(g_iTarget) && !IsPlayerAlive(g_iTarget) || GetClientTeam(g_iTarget) < 3)
@@ -766,7 +588,7 @@ public Action Command_SetHealBeacon(int client, int args)
 				}
 				else
 				{
-					CReplyToCommand(client, "%sUsage: sm_sethealbeacon 1|2 <Player>", PLUGIN_PREFIX);
+					CReplyToCommand(client, "%sUsage: sm_replacebeacon <HealBeaconed Player> <Player>", PLUGIN_PREFIX);
 					return Plugin_Handled;
 				}
 			}
@@ -790,685 +612,206 @@ public Action Command_SetHealBeacon(int client, int args)
 	
 	return Plugin_Handled;
 }
+
+public Action Command_AddNewBeacon(int client, int args)
+{
+	if(GetConVarBool(g_cvEnabled))
+	{
+		if(!g_bNoBeacon)
+		{
+			if(g_bIsDone)
+			{
+				if(GetCurrentRandoms() < 5)
+				{
+					if(args < 1)
+					{
+						CReplyToCommand(client, "%sUsage: sm_addnewbeacon <player>", PLUGIN_PREFIX);
+						return Plugin_Handled;
+					}
+					
+					char sArg[32];
+					GetCmdArg(1, sArg, 32);
+					
+					int g_iTarget = FindTarget(client, sArg, false, false);
+					
+					if(IsValidClient(g_iTarget))
+					{
+						if(g_bIsClientRandom[g_iTarget])
+						{
+							CReplyToCommand(client, "%sThe specified player is already a heal beaconed player.", PLUGIN_PREFIX);
+							return Plugin_Handled;
+						}
+						else
+						{
+							g_bIsClientRandom[g_iTarget] = true;
+							g_BeaconPlayer[g_iTarget] = 1;
+							BeaconPlayerTimer(g_iTarget);
+							CReplyToCommand(client, "%sSuccessfully added %N as a new heal beaconed player", PLUGIN_PREFIX, g_iTarget);
+							return Plugin_Handled;
+						}
+					}
+				}
+				else if(GetCurrentRandoms() >= 5)
+				{
+					CReplyToCommand(client, "%sThe maximum number of heal beacon players is {yellow}5.", PLUGIN_PREFIX);
+					return Plugin_Handled;
+				}
+				else
+				{
+					CReplyToCommand(client, "%sInvalid Player.", PLUGIN_PREFIX);
+					return Plugin_Handled;
+				}
+			}
+			else
+			{
+				CReplyToCommand(client, "%sNone has become heal beaconed player yet", PLUGIN_PREFIX);
+				return Plugin_Handled;
+			}
+		}
+		else
+		{
+			CReplyToCommand(client, "%sRound is about to end.", PLUGIN_PREFIX);
+			return Plugin_Handled;
+		}
+	}
+	else
+	{
+		CReplyToCommand(client, "%sHeal beacon is currently disabled.", PLUGIN_PREFIX);
+		return Plugin_Handled;
+	}
+	
+	return Plugin_Handled;
+}
+
+public Action Command_RemoveBeacon(int client, int args)
+{
+	if(GetConVarBool(g_cvEnabled))
+	{
+		if(!g_bNoBeacon)
+		{
+			if(g_bIsDone)
+			{
+				if(args < 1)
+				{
+					CReplyToCommand(client, "%sUsage: sm_removebeacon <HealBeaconed player>.", PLUGIN_PREFIX);
+					return Plugin_Handled;
+				}
 				
+				char arg[32];
+				GetCmdArg(1, arg, 32);
+				
+				int g_iTarget = FindTarget(client, arg, false, false);
+				
+				if(IsClientRandom(g_iTarget))
+				{
+					RemoveRandom(g_iTarget);
+					CReplyToCommand(client, "%sSuccessfully removed beacon from %N.", PLUGIN_PREFIX, g_iTarget);
+					return Plugin_Handled;
+				}
+				else if(!IsValidClient(g_iTarget))
+				{
+					CReplyToCommand(client, "%sNo matching client found.", PLUGIN_PREFIX);
+					return Plugin_Handled;
+				}
+			}
+			else
+			{
+				CReplyToCommand(client, "%sNo one has become the heal beaconed player.", PLUGIN_PREFIX);
+				return Plugin_Handled;
+			}
+		}
+		else
+		{
+			CReplyToCommand(client, "%sRound is about to end.", PLUGIN_PREFIX);
+			return Plugin_Handled;
+		}
+	}
+	else
+	{
+		CReplyToCommand(client, "%sHeal beacon is currently disabled.", PLUGIN_PREFIX);
+		return Plugin_Handled;
+	}
+	
+	return Plugin_Handled;
+}
+				
+public Action Command_CheckDistance(int client, int args)
+{
+	if(!client)
+	{
+		ReplyToCommand(client, "Cannot use this command from server rcon");
+		return Plugin_Handled;
+	}
+	
+	char arg[32];
+	GetCmdArg(1, arg, 32);
+	
+	int g_iTarget = FindTarget(client, arg, false, false);
+	
+	if(IsValidClient(client) && IsPlayerAlive(client))
+	{
+		if(IsValidClient(g_iTarget) && IsPlayerAlive(g_iTarget))
+		{
+			float distance = GetDistanceBetween(client, g_iTarget);
+			CReplyToCommand(client, "%sThe distance between you and %N is %f", PLUGIN_PREFIX, g_iTarget, distance);
+			return Plugin_Handled;
+		}
+		else if(!IsValidClient(g_iTarget))
+		{
+			CReplyToCommand(client, "%sno matching client was found", PLUGIN_PREFIX);
+			return Plugin_Handled;
+		}
+		else if(!IsPlayerAlive(g_iTarget))
+		{
+			CReplyToCommand(client, "%sThe specified player is dead.", PLUGIN_PREFIX);
+			return Plugin_Handled;
+		}
+	}
+	else if(!IsPlayerAlive(client))
+	{
+		CReplyToCommand(client, "%sYou have to be alive to use this command.", PLUGIN_PREFIX);
+		return Plugin_Handled;
+	}
+	
+	return Plugin_Handled;
+}
+
+public Action Beacon_Timer(Handle timer, int clientserial)
+{
+	int client = GetClientFromSerial(clientserial);
+	
+	if(IsValidClient(client) && IsPlayerAlive(client) && GetClientTeam(client) == 3)
+		BeaconPlayer(client);
+		
+	return Plugin_Handled;
+}
+
 public int Menu_MainCallback(Menu menu, MenuAction action, int param1, int param2)
 {
 	if(action == MenuAction_Select)
 	{
-		char buf[64];
-		menu.GetItem(param2, buf, sizeof(buf));
+		char buffer[32];
+			
+		menu.GetItem(param2, buffer, 32);
+			
+		int userid = StringToInt(buffer);
+		int random = GetClientOfUserId(userid);
 		
-		if(StrEqual(buf, "option1"))
+		if(IsValidClient(random) && IsPlayerAlive(random) && GetClientTeam(random) == 3 && g_bIsClientRandom[random])
 		{
-			DisplayMenuForFirst(param1);
+			DisplayActionsMenu(param1, random);
 		}
-		else if(StrEqual(buf, "option2"))
+		else
 		{
-			DisplayMenuForSecond(param1);
+			CPrintToChat(param1, "%sPlayer is dead or left the game", PLUGIN_PREFIX);
 		}
-		else if(StrEqual(buf, "option3"))
-		{
-			DisplaySetBeaconNumsMenu(param1);
-		}
-		else if(StrEqual(buf, "option4"))
+		
+		char item[32];
+		menu.GetItem(param2, item, 32);
+		
+		if(StrEqual(item, "option2"))
 		{
 			DisplaySettingsMenu(param1);
-		}
-	}
-	else if(action == MenuAction_End)
-	{
-		delete menu;
-	}
-	return 0;
-}
-
-
-public int Menu_FirstCallback(Menu menu, MenuAction action, int param1, int param2)
-{
-	if(action == MenuAction_Select)
-	{
-		if(IsValidClient(g_iRandom1) && g_iRandom1 != -1)
-		{
-			switch(param2)
-			{
-				case 0:
-				{
-					RePickRandom(param1, g_iRandom1);
-					CPrintToChat(param1, "%sSuccessfully repicked a random player.", PLUGIN_PREFIX);
-					LogAction(param1, -1, "[Heal Beacon] \"%L\" has Repicked a random player.", param1);
-					DisplayMenuForFirst(param1);
-				}
-			
-				case 1:
-				{
-					DisplayBeaconColorsMenuForFirst(param1);
-				}
-
-				case 2:
-				{
-					DisplayBeaconRadiusMenuForFirst(param1);
-				}
-		
-				case 3:
-				{
-					if(!g_bHasNeon[g_iRandom1])
-					{
-						SetClientNeon(g_iRandom1);
-						CPrintToChat(param1, "%sSuccessfully Enabled light on %N.", PLUGIN_PREFIX, g_iRandom1);
-						LogAction(param1, g_iRandom1, "[Heal Beacon] \"%L\" has Enabled Light on \"%L\".", param1, g_iRandom1);
-						DisplayMenuForFirst(param1);
-					}
-					else if(g_bHasNeon[g_iRandom1])
-					{
-						RemoveNeon(g_iRandom1);
-						CPrintToChat(param1, "%sSuccessfully Disabled light on %N.", PLUGIN_PREFIX, g_iRandom1);
-						LogAction(param1, g_iRandom1, "[Heal Beacon] \"%L\" has Disabled Light on \"%L\".", param1, g_iRandom1);
-						DisplayMenuForFirst(param1);
-					}
-				}
-
-				case 4:
-				{
-					DisplayNeonColorsMenuForFirst(param1);
-				}
-
-				case 5:
-				{
-					TeleportToRandom(param1, g_iRandom1);
-					CPrintToChat(param1, "%sSuccessfully Teleported to %N.", PLUGIN_PREFIX, g_iRandom1);
-					LogAction(param1, g_iRandom1, "[Heal Beacon] \"%L\" Teleported to \"%L\".", param1, g_iRandom1);
-					DisplayMenuForFirst(param1);
-				}
-				case 6:
-				{
-					TeleportToRandom(g_iRandom1, param1);
-					CPrintToChat(param1, "%sSuccessfully Brought %N.", PLUGIN_PREFIX, g_iRandom1);
-					LogAction(param1, g_iRandom1, "[Heal Beacon] \"%L\" Brought \"%L\".", param1, g_iRandom1);
-					DisplayMenuForFirst(param1);
-				}
-				case 7:
-				{
-					CPrintToChat(param1, "%sSuccessfully Slayed %N.", PLUGIN_PREFIX, g_iRandom1);
-					LogAction(param1, g_iRandom1, "[Heal Beacon] \"%L\" has slayed \"%L\".", param1, g_iRandom1);
-					ForcePlayerSuicide(g_iRandom1);
-				}
-			}
-		}
-		
-		else 
-		{
-				CPrintToChat(param1, "%sThe player is dead or left the game", PLUGIN_PREFIX);
-		}
-	}
-	else if (action == MenuAction_Cancel)
-	{
-		if (param2 == MenuCancel_ExitBack)
-		{
-			DisplayBeaconMenu(param1);
-		}
-	}
-	else if(action == MenuAction_End)
-		delete menu;
-		
-	return 0;
-}
-
-public int Menu_BeaconColorsFirstCallback(Menu menu, MenuAction action, int param1, int param2)
-{
-	if(action == MenuAction_Select)
-	{
-		if(g_iRandom1 != -1)
-		{
-			switch(param2)
-			{
-				case 0:
-				{
-					DoProgressBeaconColor(g_iRandom1, g_ColorWhite);
-					CPrintToChat(param1, "%sSuccessfully changed beacon color on %N to {white}White.", PLUGIN_PREFIX, g_iRandom1);
-					LogAction(param1, g_iRandom1, "[Heal Beacon] \"%L\" has changed beacon color on \"%L\" to White.", param1, g_iRandom1);
-					DisplayBeaconColorsMenuForFirst(param1);
-				}
-				case 1:
-				{
-					DoProgressBeaconColor(g_iRandom1, g_ColorRed);
-					CPrintToChat(param1, "%sSuccessfully changed beacon color on %N to {fullred}Red.", PLUGIN_PREFIX, g_iRandom1);
-					LogAction(param1, g_iRandom1, "[Heal Beacon] \"%L\" has changed beacon color on \"%L\" to Red.", param1, g_iRandom1);
-					DisplayBeaconColorsMenuForFirst(param1);
-				}
-				case 2:
-				{
-					DoProgressBeaconColor(g_iRandom1, g_ColorLime);
-					CPrintToChat(param1, "%sSuccessfully changed beacon color on %N to {lime}Lime.", PLUGIN_PREFIX, g_iRandom1);
-					LogAction(param1, g_iRandom1, "[Heal Beacon] \"%L\" has changed beacon color on \"%L\" to Lime.", param1, g_iRandom1);
-					DisplayBeaconColorsMenuForFirst(param1);
-				}
-				case 3:
-				{
-					DoProgressBeaconColor(g_iRandom1, g_ColorBlue);
-					CPrintToChat(param1, "%sSuccessfully changed beacon color on %N to {blue}Blue.", PLUGIN_PREFIX, g_iRandom1);
-					LogAction(param1, g_iRandom1, "[Heal Beacon] \"%L\" has changed beacon color on \"%L\" to Blue.", param1, g_iRandom1);
-					DisplayBeaconColorsMenuForFirst(param1);
-				}
-				case 4:
-				{
-					DoProgressBeaconColor(g_iRandom1, g_ColorYellow);
-					CPrintToChat(param1, "%sSuccessfully changed beacon color on %N to {yellow}Yellow.", PLUGIN_PREFIX, g_iRandom1);
-					LogAction(param1, g_iRandom1, "[Heal Beacon] \"%L\" has changed beacon color on \"%L\" to Yellow.", param1, g_iRandom1);
-					DisplayBeaconColorsMenuForFirst(param1);
-				}
-				case 5:
-				{
-					DoProgressBeaconColor(g_iRandom1, g_ColorCyan);
-					CPrintToChat(param1, "%sSuccessfully changed beacon color on %N to {cyan}Cyan.", PLUGIN_PREFIX, g_iRandom1);
-					LogAction(param1, g_iRandom1, "[Heal Beacon] \"%L\" has changed beacon color on \"%L\" to Cyan.", param1, g_iRandom1);
-					DisplayBeaconColorsMenuForFirst(param1);
-				}
-				case 6:
-				{
-					DoProgressBeaconColor(g_iRandom1, g_ColorGold);
-					CPrintToChat(param1, "%sSuccessfully changed beacon color on %N to {gold}Gold.", PLUGIN_PREFIX, g_iRandom1);
-					LogAction(param1, g_iRandom1, "[Heal Beacon] \"%L\" has changed beacon color on \"%L\" to Gold.", param1, g_iRandom1);
-					DisplayBeaconColorsMenuForFirst(param1);
-				}
-			}
-		}
-		else
-		{
-			CPrintToChat(param1, "%sThe player is dead or left the game", PLUGIN_PREFIX);
-		}
-	}
-	else if (action == MenuAction_Cancel)
-	{
-		if (param2 == MenuCancel_ExitBack)
-		{
-			DisplayMenuForFirst(param1);
-		}
-	}
-	else if(action == MenuAction_End)
-		delete menu;
-		
-	return 0;
-}
-
-public int Menu_NeonColorsFirstCallback(Menu menu, MenuAction action, int param1, int param2)
-{
-	if(action == MenuAction_Select)
-	{
-		if(g_iRandom1 != -1)
-		{
-			switch(param2)
-			{
-				case 0:
-				{
-					DoProgressNeonColor(g_iRandom1, g_ColorWhite);
-					CPrintToChat(param1, "%sSuccessfully changed Light color on %N to {white}White.", PLUGIN_PREFIX, g_iRandom1);
-					LogAction(param1, g_iRandom1, "[Heal Beacon] \"%L\" has changed Light color on \"%L\" to White.", param1, g_iRandom1);
-					DisplayNeonColorsMenuForFirst(param1);
-				}
-				case 1:
-				{
-					DoProgressNeonColor(g_iRandom1, g_ColorRed);
-					CPrintToChat(param1, "%sSuccessfully changed Light color on %N to {fullred}Red.", PLUGIN_PREFIX, g_iRandom1);
-					LogAction(param1, g_iRandom1, "[Heal Beacon] \"%L\" has changed Light color on \"%L\" to Red.", param1, g_iRandom1);
-					DisplayNeonColorsMenuForFirst(param1);
-				}
-				case 2:
-				{
-					DoProgressNeonColor(g_iRandom1, g_ColorLime);
-					CPrintToChat(param1, "%sSuccessfully changed Light color on %N to {lime}Lime.", PLUGIN_PREFIX, g_iRandom1);
-					LogAction(param1, g_iRandom1, "[Heal Beacon] \"%L\" has changed Light color on \"%L\" to Lime.", param1, g_iRandom1);
-					DisplayNeonColorsMenuForFirst(param1);
-				}
-				case 3:
-				{
-					DoProgressNeonColor(g_iRandom1, g_ColorBlue);
-					CPrintToChat(param1, "%sSuccessfully changed Light color on %N to {blue}Blue.", PLUGIN_PREFIX, g_iRandom1);
-					LogAction(param1, g_iRandom1, "[Heal Beacon] \"%L\" has changed Light color on \"%L\" to Blue.", param1, g_iRandom1);
-					DisplayNeonColorsMenuForFirst(param1);
-				}
-				case 4:
-				{
-					DoProgressNeonColor(g_iRandom1, g_ColorYellow);
-					CPrintToChat(param1, "%sSuccessfully changed Light color on %N to {yellow}yellow.", PLUGIN_PREFIX, g_iRandom1);
-					LogAction(param1, g_iRandom1, "[Heal Beacon] \"%L\" has changed Light color on \"%L\" to Yellow.", param1, g_iRandom1);
-					DisplayNeonColorsMenuForFirst(param1);
-				}
-				case 5:
-				{
-					DoProgressNeonColor(g_iRandom1, g_ColorCyan);
-					CPrintToChat(param1, "%sSuccessfully changed Light color on %N to {cyan}Cyan.", PLUGIN_PREFIX, g_iRandom1);
-					LogAction(param1, g_iRandom1, "[Heal Beacon] \"%L\" has changed Light color on \"%L\" to Cyan.", param1, g_iRandom1);
-					DisplayNeonColorsMenuForFirst(param1);
-				}
-				case 6:
-				{
-					DoProgressNeonColor(g_iRandom1, g_ColorGold);
-					CPrintToChat(param1, "%sSuccessfully changed Light color on %N to {gold}Gold.", PLUGIN_PREFIX, g_iRandom1);
-					LogAction(param1, g_iRandom1, "[Heal Beacon] \"%L\" has changed Light color on \"%L\" to Gold.", param1, g_iRandom1);
-					DisplayNeonColorsMenuForFirst(param1);
-				}
-			}
-		}
-		else
-		{
-			CPrintToChat(param1, "%sThe player is dead or left the game", PLUGIN_PREFIX);
-		}
-	}
-	else if (action == MenuAction_Cancel)
-	{
-		if (param2 == MenuCancel_ExitBack)
-		{
-			DisplayMenuForFirst(param1);
-		}
-	}
-	else if(action == MenuAction_End)
-		delete menu;
-		
-	return 0;
-}
-
-public int Menu_BeaconRadiusFirstCallback(Menu menu, MenuAction action, int param1, int param2)
-{
-	if(action == MenuAction_Select)
-	{
-		if(g_iRandom1 != -1)
-		{
-			char buf[64];
-			menu.GetItem(param2, buf, sizeof(buf));
-			g_iClientDistance[g_iRandom1] = StringToFloat(buf);
-			DisplayBeaconRadiusMenuForFirst(param1);
-		}
-		else
-		{
-			PrintToChat(param1, "%sPlayer is dead or left the game", PLUGIN_PREFIX);
-		}
-	}
-	else if (action == MenuAction_Cancel)
-	{
-		if (param2 == MenuCancel_ExitBack)
-		{
-			DisplayMenuForFirst(param1);
-		}
-	}
-	else if(action == MenuAction_End)
-		delete menu;
-		
-	return 0;
-}
-
-public int Menu_SecondCallback(Menu menu, MenuAction action, int param1, int param2)
-{
-	if(action == MenuAction_Select)
-	{
-		if(g_iRandom2 != -1)
-		{
-			switch(param2)
-			{
-				case 0:
-				{
-					RePickRandom(param1, g_iRandom2);
-					CPrintToChat(param1, "%sSuccessfully repicked a random player.", PLUGIN_PREFIX);
-					LogAction(param1, -1, "[Heal Beacon] \"%L\" has Repicked a random player.", param1);
-					DisplayMenuForSecond(param1);
-				}
-			
-				case 1:
-				{
-					DisplayBeaconColorsMenuForSecond(param1);
-				}
-
-				case 2:
-				{
-					DisplayBeaconRadiusMenuForSecond(param1);
-				}
-		
-				case 3:
-				{
-					if(!g_bHasNeon[g_iRandom2])
-					{
-						SetClientNeon(g_iRandom2);
-						CPrintToChat(param1, "%sSuccessfully Enabled light on %N.", PLUGIN_PREFIX, g_iRandom2);
-						LogAction(param1, g_iRandom2, "[Heal Beacon] \"%L\" has Enabled Light on \"%L\".", param1, g_iRandom2);
-						DisplayMenuForSecond(param1);
-					}
-					else if(g_bHasNeon[g_iRandom2])
-					{
-						RemoveNeon(g_iRandom2);
-						CPrintToChat(param1, "%sSuccessfully Disabled light on %N.", PLUGIN_PREFIX, g_iRandom2);
-						LogAction(param1, g_iRandom2, "[Heal Beacon] \"%L\" has Disabled Light on \"%L\".", param1, g_iRandom2);
-						DisplayMenuForSecond(param1);
-					}
-				}
-
-				case 4:
-				{
-					DisplayNeonColorsMenuForSecond(param1);
-				}
-
-				case 5:
-				{
-					TeleportToRandom(param1, g_iRandom2);
-					CPrintToChat(param1, "%sSuccessfully Teleported to %N.", PLUGIN_PREFIX, g_iRandom2);
-					LogAction(param1, g_iRandom2, "[Heal Beacon] \"%L\" Teleported to \"%L\".", param1, g_iRandom2);
-					DisplayMenuForSecond(param1);
-				}
-				case 6:
-				{
-					TeleportToRandom(g_iRandom2, param1);
-					CPrintToChat(param1, "%sSuccessfully Brought %N.", PLUGIN_PREFIX, g_iRandom2);
-					LogAction(param1, g_iRandom2, "[Heal Beacon] \"%L\" Brought \"%L\".", param1, g_iRandom2);
-					DisplayMenuForSecond(param1);
-				}
-				case 7:
-				{
-					CPrintToChat(param1, "%sSuccessfully Slayed %N.", PLUGIN_PREFIX, g_iRandom2);
-					LogAction(param1, g_iRandom2, "[Heal Beacon] \"%L\" has slayed \"%L\".", param1, g_iRandom2);
-					ForcePlayerSuicide(g_iRandom2);
-				}
-			}
-		}
-		else 
-		{
-			CPrintToChat(param1, "%sThe player is dead or left the game", PLUGIN_PREFIX);
-		}
-	}
-	else if (action == MenuAction_Cancel)
-	{
-		if (param2 == MenuCancel_ExitBack)
-		{
-			DisplayBeaconMenu(param1);
-		}
-	}
-	else if(action == MenuAction_End)
-		delete menu;
-		
-	return 0;
-}
-
-public int Menu_BeaconColorsSecondCallback(Menu menu, MenuAction action, int param1, int param2)
-{
-	if(action == MenuAction_Select)
-	{
-		if(g_iRandom2 != -1)
-		{
-			switch(param2)
-			{
-				case 0:
-				{
-					DoProgressBeaconColor(g_iRandom2, g_ColorWhite);
-					CPrintToChat(param1, "%sSuccessfully changed beacon color on %N to {white}White.", PLUGIN_PREFIX, g_iRandom2);
-					LogAction(param1, g_iRandom2, "[Heal Beacon] \"%L\" has changed beacon color on \"%L\" to White.", param1, g_iRandom2);
-					DisplayBeaconColorsMenuForSecond(param1);
-				}
-				case 1:
-				{
-					DoProgressBeaconColor(g_iRandom2, g_ColorRed);
-					CPrintToChat(param1, "%sSuccessfully changed beacon color on %N to {fullred}Red.", PLUGIN_PREFIX, g_iRandom2);
-					LogAction(param1, g_iRandom2, "[Heal Beacon] \"%L\" has changed beacon color on \"%L\" to Red.", param1, g_iRandom2);
-					DisplayBeaconColorsMenuForSecond(param1);
-				}
-				case 2:
-				{
-					DoProgressBeaconColor(g_iRandom2, g_ColorLime);
-					CPrintToChat(param1, "%sSuccessfully changed beacon color on %N to {lime}Lime.", PLUGIN_PREFIX, g_iRandom2);
-					LogAction(param1, g_iRandom2, "[Heal Beacon] \"%L\" has changed beacon color on \"%L\" to Lime.", param1, g_iRandom2);
-					DisplayBeaconColorsMenuForSecond(param1);
-				}
-				case 3:
-				{
-					DoProgressBeaconColor(g_iRandom2, g_ColorBlue);
-					CPrintToChat(param1, "%sSuccessfully changed beacon color on %N to {blue}Blue.", PLUGIN_PREFIX, g_iRandom2);
-					LogAction(param1, g_iRandom2, "[Heal Beacon] \"%L\" has changed beacon color on \"%L\" to Blue.", param1, g_iRandom2);
-					DisplayBeaconColorsMenuForSecond(param1);
-				}
-				case 4:
-				{
-					DoProgressBeaconColor(g_iRandom2, g_ColorYellow);
-					CPrintToChat(param1, "%sSuccessfully changed beacon color on %N to {yellow}Yellow.", PLUGIN_PREFIX, g_iRandom2);
-					LogAction(param1, g_iRandom2, "[Heal Beacon] \"%L\" has changed beacon color on \"%L\" to Yellow.", param1, g_iRandom2);
-					DisplayBeaconColorsMenuForSecond(param1);
-				}
-				case 5:
-				{
-					DoProgressBeaconColor(g_iRandom2, g_ColorCyan);
-					CPrintToChat(param1, "%sSuccessfully changed beacon color on %N to {cyan}Cyan.", PLUGIN_PREFIX, g_iRandom2);
-					LogAction(param1, g_iRandom2, "[Heal Beacon] \"%L\" has changed beacon color on \"%L\" to Cyan.", param1, g_iRandom2);
-					DisplayBeaconColorsMenuForSecond(param1);
-				}
-				case 6:
-				{
-					DoProgressBeaconColor(g_iRandom2, g_ColorGold);
-					CPrintToChat(param1, "%sSuccessfully changed beacon color on %N to {gold}Gold.", PLUGIN_PREFIX, g_iRandom2);
-					LogAction(param1, g_iRandom2, "[Heal Beacon] \"%L\" has changed beacon color on \"%L\" to Gold.", param1, g_iRandom2);
-					DisplayBeaconColorsMenuForSecond(param1);
-				}
-			}
-		}
-		else
-		{
-			CPrintToChat(param1, "%sThe player is dead or left the game", PLUGIN_PREFIX);
-		}
-	}
-	else if (action == MenuAction_Cancel)
-	{
-		if (param2 == MenuCancel_ExitBack)
-		{
-			DisplayMenuForSecond(param1);
-		}
-	}
-	else if(action == MenuAction_End)
-		delete menu;
-		
-	return 0;
-}
-
-public int Menu_NeonColorsSecondCallback(Menu menu, MenuAction action, int param1, int param2)
-{
-	if(action == MenuAction_Select)
-	{
-		if(g_iRandom2 != -1)
-		{
-			switch(param2)
-			{
-				case 0:
-				{
-					DoProgressNeonColor(g_iRandom2, g_ColorWhite);
-					CPrintToChat(param1, "%sSuccessfully changed Light color on %N to {white}White.", PLUGIN_PREFIX, g_iRandom2);
-					LogAction(param1, g_iRandom2, "[Heal Beacon] \"%L\" has changed Light color on \"%L\" to White.", param1, g_iRandom2);
-					DisplayNeonColorsMenuForSecond(param1);
-				}
-				case 1:
-				{
-					DoProgressNeonColor(g_iRandom2, g_ColorRed);
-					CPrintToChat(param1, "%sSuccessfully changed Light color on %N to {fullred}Red.", PLUGIN_PREFIX, g_iRandom2);
-					LogAction(param1, g_iRandom2, "[Heal Beacon] \"%L\" has changed Light color on \"%L\" to Red.", param1, g_iRandom2);
-					DisplayNeonColorsMenuForSecond(param1);
-				}
-				case 2:
-				{
-					DoProgressNeonColor(g_iRandom2, g_ColorLime);
-					CPrintToChat(param1, "%sSuccessfully changed Light color on %N to {lime}Lime.", PLUGIN_PREFIX, g_iRandom2);
-					LogAction(param1, g_iRandom2, "[Heal Beacon] \"%L\" has changed Light color on \"%L\" to Lime.", param1, g_iRandom2);
-					DisplayNeonColorsMenuForSecond(param1);
-				}
-				case 3:
-				{
-					DoProgressNeonColor(g_iRandom2, g_ColorBlue);
-					CPrintToChat(param1, "%sSuccessfully changed Light color on %N to {blue}Blue.", PLUGIN_PREFIX, g_iRandom2);
-					LogAction(param1, g_iRandom2, "[Heal Beacon] \"%L\" has changed Light color on \"%L\" to Blue.", param1, g_iRandom2);
-					DisplayNeonColorsMenuForSecond(param1);
-				}
-				case 4:
-				{
-					DoProgressNeonColor(g_iRandom2, g_ColorYellow);
-					CPrintToChat(param1, "%sSuccessfully changed Light color on %N to {yellow}yellow.", PLUGIN_PREFIX, g_iRandom2);
-					LogAction(param1, g_iRandom2, "[Heal Beacon] \"%L\" has changed Light color on \"%L\" to Yellow.", param1, g_iRandom2);
-					DisplayNeonColorsMenuForSecond(param1);
-				}
-				case 5:
-				{
-					DoProgressNeonColor(g_iRandom2, g_ColorCyan);
-					CPrintToChat(param1, "%sSuccessfully changed Light color on %N to {cyan}Cyan.", PLUGIN_PREFIX, g_iRandom2);
-					LogAction(param1, g_iRandom2, "[Heal Beacon] \"%L\" has changed Light color on \"%L\" to Cyan.", param1, g_iRandom2);
-					DisplayNeonColorsMenuForSecond(param1);
-				}
-				case 6:
-				{
-					DoProgressNeonColor(g_iRandom2, g_ColorGold);
-					CPrintToChat(param1, "%sSuccessfully changed Light color on %N to {gold}Gold.", PLUGIN_PREFIX, g_iRandom2);
-					LogAction(param1, g_iRandom2, "[Heal Beacon] \"%L\" has changed Light color on \"%L\" to Gold.", param1, g_iRandom2);
-					DisplayNeonColorsMenuForSecond(param1);
-				}
-			}
-		}
-		else
-		{
-			CPrintToChat(param1, "%sThe player is dead or left the game", PLUGIN_PREFIX);
-		}
-	}
-	else if (action == MenuAction_Cancel)
-	{
-		if (param2 == MenuCancel_ExitBack)
-		{
-			DisplayMenuForSecond(param1);
-		}
-	}
-	else if(action == MenuAction_End)
-		delete menu;
-		
-	return 0;
-}
-
-public int Menu_BeaconRadiusSecondCallback(Menu menu, MenuAction action, int param1, int param2)
-{
-	if(action == MenuAction_Select)
-	{
-		if(g_iRandom2 != -1)
-		{
-			char buf[64];
-			menu.GetItem(param2, buf, sizeof(buf));
-			g_iClientDistance[g_iRandom2] = StringToFloat(buf);
-			DisplayBeaconRadiusMenuForSecond(param1);
-			CPrintToChat(param1, "%sBeacon distance on %N has been changed to %f", PLUGIN_PREFIX, g_iRandom2, g_iClientDistance[g_iRandom2]);
-		}
-		else
-		{
-			PrintToChat(param1, "%sPlayer is dead or left the game", PLUGIN_PREFIX);
-		}
-	}
-	else if (action == MenuAction_Cancel)
-	{
-		if (param2 == MenuCancel_ExitBack)
-		{
-			DisplayMenuForSecond(param1);
-		}
-	}
-	else if(action == MenuAction_End)
-		delete menu;
-		
-	return 0;
-}
-
-public int Menu_SetBeaconNumsMenu(Menu menu, MenuAction action, int param1, int param2)
-{
-	if(action == MenuAction_Select)
-	{
-		switch(param2)
-		{
-			case 0:
-			{
-				DisplaySetBeaconFirstMenu(param1);
-			}
-			case 1:
-			{
-				DisplaySetBeaconSecondMenu(param1);
-			}
-		}
-	}
-	else if(action == MenuAction_End)
-		delete menu;
-
-	return 0;
-}
-
-public int Menu_SetBeaconFirstMenu(Menu menu, MenuAction action, int param1, int param2)
-{
-	if(action == MenuAction_Select)
-	{
-		char buf[32];
-		int userid, target;
-		
-		menu.GetItem(param2, buf, sizeof(buf));
-		userid = StringToInt(buf);
-		target = GetClientOfUserId(userid);
-		
-		if ((GetClientOfUserId(userid)) == 0)
-		{
-			PrintToChat(param1, "%sPlayer no longer available", PLUGIN_PREFIX);
-		}
-		else
-		{
-			if(IsValidClient(target) && IsPlayerAlive(target) && GetClientTeam(target) == 3)
-			{
-				if(target == g_iRandom1 || target == g_iRandom2)
-				{
-					CPrintToChat(param1, "%sThe player is already a beaconed player", PLUGIN_PREFIX);
-				}
-				else
-				{
-					ApplyHealBeacon(target, g_iRandom1);
-				}
-			}
-		}
-	}
-	else if (action == MenuAction_Cancel)
-	{
-		if (param2 == MenuCancel_ExitBack && menu)
-		{
-			DisplaySetBeaconNumsMenu(param1);
-		}
-	}
-	else if(action == MenuAction_End)
-		delete menu;
-		
-	return 0;
-}
-
-public int Menu_SetBeaconSecondMenu(Menu menu, MenuAction action, int param1, int param2)
-{
-	if(action == MenuAction_Select)
-	{
-		char buf[32];
-		int userid, target;
-		
-		menu.GetItem(param2, buf, sizeof(buf));
-		userid = StringToInt(buf);
-		target = GetClientOfUserId(userid);
-		
-		if ((GetClientOfUserId(userid)) == 0)
-		{
-			CPrintToChat(param1, "%sPlayer no longer available", PLUGIN_PREFIX);
-		}
-		else
-		{
-			if(IsValidClient(target) && IsPlayerAlive(target) && GetClientTeam(target) == 3)
-			{
-				if(target == g_iRandom1 || target == g_iRandom2)
-				{
-					CPrintToChat(param1, "%sThe player is already a beaconed player", PLUGIN_PREFIX);
-				}
-				else
-				{
-					ApplyHealBeacon(target, g_iRandom2);
-				}
-			}
-		}
-	}
-	else if (action == MenuAction_Cancel)
-	{
-		if (param2 == MenuCancel_ExitBack && menu)
-		{
-			DisplaySetBeaconNumsMenu(param1);
 		}
 	}
 	else if(action == MenuAction_End)
@@ -1517,7 +860,7 @@ public int Menu_SettingsCallback(Menu menu, MenuAction action, int param1, int p
 	{
 		if(param2 == MenuCancel_ExitBack)
 		{
-			DisplayBeaconMenu(param1);
+			DisplayHealBeaconMenu(param1);
 		}
 	}
 	else if(action == MenuAction_End)
@@ -1608,7 +951,302 @@ public int Menu_BeaconLifeTimeCallback(Menu menu, MenuAction action, int param1,
 	return 0;
 	
 }
+
+public int Menu_ActionsCallback(Menu menu, MenuAction action, int param1, int param2)
+{
+	if(action == MenuAction_Select)
+	{
+		char buffer[64];
+		menu.GetItem(param2, buffer, 64);
 		
+		int userid = StringToInt(buffer);
+		int random = GetClientOfUserId(userid);
+		
+		if(IsValidClient(random) && IsPlayerAlive(random) && GetClientTeam(random) == 3)
+		{	
+			switch(param2)
+			{
+				case 0:
+				{
+					RepickRandom(param1, random);
+					CPrintToChat(param1, "%sSuccessfully repicked a random player.", PLUGIN_PREFIX);
+					LogAction(param1, -1, "[Heal Beacon] \"%L\" has Repicked a random player.", param1);
+					DisplayActionsMenu(param1, random);
+				}
+				
+				case 1:
+				{
+					DisplayBeaconColorsMenu(param1, random);
+				}
+	
+				case 2:
+				{
+					DisplayBeaconRadiusMenu(param1, random);
+				}
+			
+				case 3:
+				{
+					if(!g_bHasNeon[random])
+					{
+						SetClientNeon(random);
+						CPrintToChat(param1, "%sSuccessfully Enabled light on %N.", PLUGIN_PREFIX, random);
+						LogAction(param1, random, "[Heal Beacon] \"%L\" has Enabled Light on \"%L\".", param1, random);
+						DisplayActionsMenu(param1, random);
+					}
+					else if(g_bHasNeon[random])
+					{
+						RemoveNeon(random);
+						CPrintToChat(param1, "%sSuccessfully Disabled light on %N.", PLUGIN_PREFIX, random);
+						LogAction(param1, random, "[Heal Beacon] \"%L\" has Disabled Light on \"%L\".", param1, random);
+						DisplayActionsMenu(param1, random);
+					}
+				}
+	
+				case 4:
+				{
+					DisplayNeonColorsMenu(param1, random);
+				}
+	
+				case 5:
+				{
+					TeleportToRandom(param1, random);
+					CPrintToChat(param1, "%sSuccessfully Teleported to %N.", PLUGIN_PREFIX, random);
+					LogAction(param1, random, "[Heal Beacon] \"%L\" Teleported to \"%L\".", param1, random);
+					DisplayActionsMenu(param1, random);
+				}
+				case 6:
+				{
+					TeleportToRandom(random, param1);
+					CPrintToChat(param1, "%sSuccessfully Brought %N.", PLUGIN_PREFIX, random);
+					LogAction(param1, random, "[Heal Beacon] \"%L\" Brought \"%L\".", param1, random);
+					DisplayActionsMenu(param1, random);
+				}
+				case 7:
+				{
+					CPrintToChat(param1, "%sSuccessfully removed heal beacon from %N", PLUGIN_PREFIX, random);
+					LogAction(param1, random, "[Heal Beacon] \"%L\" has removed heal beacon from \"%L\".", param1, random);
+					RemoveRandom(random);
+				}
+				case 8:
+				{
+					CPrintToChat(param1, "%sSuccessfully Slayed %N.", PLUGIN_PREFIX, random);
+					LogAction(param1, random, "[Heal Beacon] \"%L\" has slayed \"%L\".", param1, random);
+					ForcePlayerSuicide(random);
+				}
+			}
+		}
+		
+		else 
+		{
+			CPrintToChat(param1, "%sThe player is dead or left the game", PLUGIN_PREFIX);
+		}
+	}
+	else if (action == MenuAction_Cancel)
+	{
+		if (param2 == MenuCancel_ExitBack)
+		{
+			DisplayHealBeaconMenu(param1);
+		}
+	}
+	else if(action == MenuAction_End)
+		delete menu;
+		
+	return 0;
+}
+
+public int Menu_BeaconColorsCallback(Menu menu, MenuAction action, int param1, int param2)
+{
+	if(action == MenuAction_Select)
+	{
+		char buffer[32];
+		menu.GetItem(param2, buffer, 32);
+		
+		int userid = StringToInt(buffer);
+		int random = GetClientOfUserId(userid);
+		
+		if(IsValidClient(random) && IsPlayerAlive(random) && GetClientTeam(random) == 3 && g_bIsClientRandom[random])
+		{
+			switch(param2)
+			{
+				case 0:
+				{
+					DoProgressBeaconColor(random, g_ColorWhite);
+					CPrintToChat(param1, "%sSuccessfully changed beacon color on %N to {white}White.", PLUGIN_PREFIX, random);
+					LogAction(param1, random, "[Heal Beacon] \"%L\" has changed beacon color on \"%L\" to White.", param1, random);
+				}
+				case 1:
+				{
+					DoProgressBeaconColor(random, g_ColorRed);
+					CPrintToChat(param1, "%sSuccessfully changed beacon color on %N to {fullred}Red.", PLUGIN_PREFIX, random);
+					LogAction(param1, random, "[Heal Beacon] \"%L\" has changed beacon color on \"%L\" to Red.", param1, random);
+				}
+				case 2:
+				{
+					DoProgressBeaconColor(random, g_ColorLime);
+					CPrintToChat(param1, "%sSuccessfully changed beacon color on %N to {lime}Lime.", PLUGIN_PREFIX, random);
+					LogAction(param1, random, "[Heal Beacon] \"%L\" has changed beacon color on \"%L\" to Lime.", param1, random);
+				}
+				case 3:
+				{
+					DoProgressBeaconColor(random, g_ColorBlue);
+					CPrintToChat(param1, "%sSuccessfully changed beacon color on %N to {blue}Blue.", PLUGIN_PREFIX, random);
+					LogAction(param1, random, "[Heal Beacon] \"%L\" has changed beacon color on \"%L\" to Blue.", param1, random);
+				}
+				case 4:
+				{
+					DoProgressBeaconColor(random, g_ColorYellow);
+					CPrintToChat(param1, "%sSuccessfully changed beacon color on %N to {yellow}Yellow.", PLUGIN_PREFIX, random);
+					LogAction(param1, random, "[Heal Beacon] \"%L\" has changed beacon color on \"%L\" to Yellow.", param1, random);
+				}
+				case 5:
+				{
+					DoProgressBeaconColor(random, g_ColorCyan);
+					CPrintToChat(param1, "%sSuccessfully changed beacon color on %N to {cyan}Cyan.", PLUGIN_PREFIX, random);
+					LogAction(param1, random, "[Heal Beacon] \"%L\" has changed beacon color on \"%L\" to Cyan.", param1, random);
+				}
+				case 6:
+				{
+					DoProgressBeaconColor(random, g_ColorGold);
+					CPrintToChat(param1, "%sSuccessfully changed beacon color on %N to {gold}Gold.", PLUGIN_PREFIX, random);
+					LogAction(param1, random, "[Heal Beacon] \"%L\" has changed beacon color on \"%L\" to Gold.", param1, random);
+				}
+			}
+			
+			DisplayBeaconColorsMenu(param1, random);
+			
+		}
+		else
+		{
+			CPrintToChat(param1, "%sThe player is dead or left the game", PLUGIN_PREFIX);
+		}
+	}
+	else if(action == MenuAction_End)
+		delete menu;
+		
+	return 0;
+}
+
+public int Menu_NeonColorsCallback(Menu menu, MenuAction action, int param1, int param2)
+{
+	if(action == MenuAction_Select)
+	{
+		char buffer[32];
+		menu.GetItem(param2, buffer, 32);
+		
+		int userid = StringToInt(buffer);
+		int random = GetClientOfUserId(userid);
+		
+		if(IsValidClient(random) && IsPlayerAlive(random) && GetClientTeam(random) == 3)
+		{
+			switch(param2)
+			{
+				case 0:
+				{
+					DoProgressNeonColor(random, g_ColorWhite);
+					CPrintToChat(param1, "%sSuccessfully changed Light color on %N to {white}White.", PLUGIN_PREFIX, random);
+					LogAction(param1, random, "[Heal Beacon] \"%L\" has changed Light color on \"%L\" to White.", param1, random);
+				}
+				case 1:
+				{
+					DoProgressNeonColor(random, g_ColorRed);
+					CPrintToChat(param1, "%sSuccessfully changed Light color on %N to {fullred}Red.", PLUGIN_PREFIX, random);
+					LogAction(param1, random, "[Heal Beacon] \"%L\" has changed Light color on \"%L\" to Red.", param1, random);
+				}
+				case 2:
+				{
+					DoProgressNeonColor(random, g_ColorLime);
+					CPrintToChat(param1, "%sSuccessfully changed Light color on %N to {lime}Lime.", PLUGIN_PREFIX, random);
+					LogAction(param1, random, "[Heal Beacon] \"%L\" has changed Light color on \"%L\" to Lime.", param1, random);
+				}
+				case 3:
+				{
+					DoProgressNeonColor(random, g_ColorBlue);
+					CPrintToChat(param1, "%sSuccessfully changed Light color on %N to {blue}Blue.", PLUGIN_PREFIX, random);
+					LogAction(param1, random, "[Heal Beacon] \"%L\" has changed Light color on \"%L\" to Blue.", param1, random);
+				}
+				case 4:
+				{
+					DoProgressNeonColor(random, g_ColorYellow);
+					CPrintToChat(param1, "%sSuccessfully changed Light color on %N to {yellow}yellow.", PLUGIN_PREFIX, random);
+					LogAction(param1, random, "[Heal Beacon] \"%L\" has changed Light color on \"%L\" to Yellow.", param1, random);
+				}
+				case 5:
+				{
+					DoProgressNeonColor(random, g_ColorCyan);
+					CPrintToChat(param1, "%sSuccessfully changed Light color on %N to {cyan}Cyan.", PLUGIN_PREFIX, random);
+					LogAction(param1, random, "[Heal Beacon] \"%L\" has changed Light color on \"%L\" to Cyan.", param1, random);
+				}
+				case 6:
+				{
+					DoProgressNeonColor(random, g_ColorGold);
+					CPrintToChat(param1, "%sSuccessfully changed Light color on %N to {gold}Gold.", PLUGIN_PREFIX, random);
+					LogAction(param1, random, "[Heal Beacon] \"%L\" has changed Light color on \"%L\" to Gold.", param1, random);
+				}
+			}
+			
+			DisplayNeonColorsMenu(param1, random);
+			
+		}
+		else
+		{
+			CPrintToChat(param1, "%sThe player is dead or left the game", PLUGIN_PREFIX);
+		}
+	}
+	else if(action == MenuAction_End)
+		delete menu;
+		
+	return 0;
+}
+
+public int Menu_BeaconRadiusCallback(Menu menu, MenuAction action, int param1, int param2)
+{
+	if(action == MenuAction_Select)
+	{
+		char buffer[32];
+		menu.GetItem(param2, buffer, 32);
+		
+		int userid = StringToInt(buffer);
+		int random = GetClientOfUserId(userid);
+		
+		if(IsValidClient(random) && IsPlayerAlive(random) && GetClientTeam(random) == 3 && g_bIsClientRandom[random])
+		{
+			switch(param2)
+			{
+				case 0:
+				{
+					g_fClientDistance[random] = 200.0;
+				}
+				case 1:
+				{
+					g_fClientDistance[random] = 400.0;
+				}
+				case 2:
+				{
+					g_fClientDistance[random] = 600.0;
+				}
+				case 3:
+				{
+					g_fClientDistance[random] = 800.0;
+				}
+				case 4:
+				{
+					g_fClientDistance[random] = 1000.0;
+				}
+				case 5:
+				{
+					g_fClientDistance[random] = 1500.0;
+				}
+			}
+			
+			DisplayBeaconRadiusMenu(param1, random);		
+		}		
+	}
+	else if(action == MenuAction_End)
+		delete menu;
+		
+	return 0;
+}
+	
 void BeaconPlayerTimer(int client)
 {	
 		if(IsValidClient(client) && IsPlayerAlive(client) && GetClientTeam(client) == 3)		
@@ -1623,8 +1261,7 @@ void BeaconPlayer(int client)
 		GetClientAbsOrigin(client, fvec);
 		fvec[2] += 10;
 		
-		TE_SetupBeamRingPoint(fvec, g_iClientDistance[client] - 1.0, g_iClientDistance[client], g_LaserSprite, g_HaloSprite, 0, 10, g_cvLifeTime.FloatValue, 10.0, 0.5, g_iClientBeaconColor[client], 10, 0);
-	
+		TE_SetupBeamRingPoint(fvec, g_fClientDistance[client] - 1.0, g_fClientDistance[client], g_LaserSprite, g_HaloSprite, 0, 2, g_cvLifeTime.FloatValue, 5.0, 0.5, g_iClientBeaconColor[client], 10, 0);
 		TE_SendToAll();
 			
 		GetClientEyePosition(client, fvec);
@@ -1646,165 +1283,6 @@ float GetDistanceBetween(int origin, int target)
 	return GetVectorDistance(fOrigin, fTarget);
 }
 
-void GetFirstRandom()
-{
-	int g_iClients[MAXPLAYERS+1];
-	int g_iCount = 0;
-	
-	for(int i = 1; i <= MaxClients; i++)
-	{
-		if(IsValidClient(i) && IsPlayerAlive(i) && GetClientTeam(i) == 3)
-		{
-			g_iClients[g_iCount++] = i;
-		}
-	}
-	
-	if(g_iCount >= 2)
-	{
-		g_bIsDone = true;
-		g_iRandom1 = g_iClients[GetRandomInt(0, g_iCount - 1)];
-		CPrintToChatAll("%sPlayer %N is the first beaconed player.", PLUGIN_PREFIX, g_iRandom1);
-		g_BeaconPlayer[g_iRandom1] = 1;
-		BeaconPlayerTimer(g_iRandom1);		
-	}
-	else
-	{
-		return;
-	}
-}
-
-void GetSecondRandom()
-{
-	int g_iClients[MAXPLAYERS+1];
-	int g_iCount = 0;
-	
-	for(int i = 1; i <= MaxClients; i++)
-	{
-		if(IsValidClient(i) && IsPlayerAlive(i) && GetClientTeam(i) == 3 && i != g_iRandom1)
-		{
-			g_iClients[g_iCount++] = i;
-		}
-	}
-	
-	if(g_iCount >= 2)
-	{
-		g_iRandom2 = g_iClients[GetRandomInt(0, g_iCount - 1)];
-		CPrintToChatAll("%sPlayer %N is the second beaconed player.", PLUGIN_PREFIX, g_iRandom2);
-		g_BeaconPlayer[g_iRandom2] = 1;
-		BeaconPlayerTimer(g_iRandom2);		
-	}
-}
-
-void RePickRandom(int client, int remove)
-{
-	int g_iClients[MAXPLAYERS+1];
-	int g_iCount = 0;
-	
-	for(int i = 1; i <= MaxClients; i++)
-	{
-		if(IsValidClient(i) && IsPlayerAlive(i) && GetClientTeam(i) == 3 && i != g_iRandom1 && i != g_iRandom2)
-		{
-			g_iClients[g_iCount++] = i;
-		}
-	}
-	
-	if(g_iCount >= 2)
-	{
-		if(remove == g_iRandom1 && g_iRandom1 != -1)
-		{
-			char sName[64];
-			GetClientName(g_iRandom1, sName, 64);
-			
-			g_BeaconPlayer[g_iRandom1] = 0;
-			delete BeaconTimer[g_iRandom1];
-			RemoveNeon(g_iRandom1);
-			
-			g_iRandom1 = -1;
-		
-			g_iRandom1 = g_iClients[GetRandomInt(0, g_iCount - 1)];
-			
-			g_BeaconPlayer[g_iRandom1] = 1;
-			
-			BeaconPlayerTimer(g_iRandom1);
-			CPrintToChatAll("%s{yellow}%N {white}is the new beaconed player instead of {yellow}%s {white}repicked by {yellow}%N", PLUGIN_PREFIX, g_iRandom1, sName, client);
-		}
-		else if(remove == g_iRandom2 && g_iRandom2 != -1)
-		{
-			char sName[64];
-			GetClientName(g_iRandom2, sName, 64);
-			
-			g_BeaconPlayer[g_iRandom2] = 0;
-			delete BeaconTimer[g_iRandom2];
-			RemoveNeon(g_iRandom2);
-			
-			g_iRandom2 = -1;
-		
-			g_iRandom2 = g_iClients[GetRandomInt(0, g_iCount - 1)];
-			
-			g_BeaconPlayer[g_iRandom2] = 2;
-			
-			BeaconPlayerTimer(g_iRandom2);
-			CPrintToChatAll("%s{yellow}%N {white}is the new beaconed player instead of {yellow}%s {white}repicked by {yellow}%N", PLUGIN_PREFIX, g_iRandom2, sName, client);
-		}
-	}
-}
-
-void ApplyHealBeacon(client, int random)
-{
-	if(random == g_iRandom1 && g_iRandom1 == -1)
-	{
-		g_iRandom1 = client;
-		g_BeaconPlayer[client] = 1;
-		
-		BeaconPlayerTimer(client);
-		CPrintToChatAll("%s%N has been a beaconed player", PLUGIN_PREFIX, client);
-	}
-	else if(random == g_iRandom1 && g_iRandom1 != -1)
-	{
-		char sName[64];
-		GetClientName(g_iRandom1, sName, 64);
-		
-		g_BeaconPlayer[g_iRandom1] = 0;
-		delete BeaconTimer[g_iRandom1];
-		RemoveNeon(g_iRandom1);
-		g_iRandom1 = -1;
-		
-			
-		g_iRandom1 = client;
-		g_BeaconPlayer[client] = 1;
-		
-		BeaconPlayerTimer(client);
-		
-		CPrintToChatAll("%s%N has been a beaconed player as a replacement of {yellow}%s.", PLUGIN_PREFIX, client, sName);
-	}
-	else if(random == g_iRandom2 && g_iRandom2 == -1)
-	{
-		g_iRandom2 = client;
-		g_BeaconPlayer[client] = 2;
-		
-		BeaconPlayerTimer(client);
-		CPrintToChatAll("%s%N has been a beaconed player", PLUGIN_PREFIX, client);
-	}
-	else if(random == g_iRandom2 && g_iRandom2 != -1)
-	{
-		char sName[64];
-		GetClientName(g_iRandom2, sName, 64);
-		
-		g_BeaconPlayer[g_iRandom2] = 0;
-		RemoveNeon(g_iRandom2);
-		delete BeaconTimer[g_iRandom2];
-		g_iRandom2 = -1;
-		
-			
-		g_iRandom2 = client;
-		g_BeaconPlayer[client] = 2;
-		
-		BeaconPlayerTimer(client);
-		
-		CPrintToChatAll("%s%N has been a beaconed player as a replacement of {yellow}%s.", PLUGIN_PREFIX, client, sName);
-	}
-}
-		
 void DealDamage(int client, int nDamage, int nDamageType = DMG_GENERIC)
 {
 	if(IsValidClient(client) && IsPlayerAlive(client) && nDamage > 0)
@@ -1829,61 +1307,128 @@ void DealDamage(int client, int nDamage, int nDamageType = DMG_GENERIC)
             
             RemoveEdict(EntityPointHurt);
         }
-        return;
-    }
+        else
+        {
+       		return;
+       	}
+   }
 }
 
-void DeleteAllHandles(int client)
+void GetRandomPlayers()
 {
-	BeaconTimer[client] = null;
-	g_hHudTimer[client] = null;
-	g_hDistanceTimer[client] = null;
-	DistanceTimerHandle[client] = null;
+	int g_iCountHumans = 0;
+	int g_iClientsCount[MAXPLAYERS+1];
 	
+	for (int human = 1; human <= MaxClients; human++)
+	{
+		if(IsValidClient(human) && IsPlayerAlive(human) && GetClientTeam(human) == 3 && !g_bIsClientRandom[human])
+		{
+			g_iClientsCount[g_iCountHumans++] = human;
+		}
+	}
 	
-	if(BeaconTimer[client] != INVALID_HANDLE)
-		delete BeaconTimer[client];
-					
-	if(g_hHudTimer[client] != INVALID_HANDLE)
-		delete g_hHudTimer[client];
-					
-	if(g_hDistanceTimer[client] != INVALID_HANDLE)
-		delete g_hDistanceTimer[client];
-						
-	if(DistanceTimerHandle[client] != INVALID_HANDLE)
-		delete DistanceTimerHandle[client];
+	if(g_iCountHumans >= 2)
+	{
+
+		int random = g_iClientsCount[GetRandomInt(0, g_iCountHumans - 1)];
+		g_bIsClientRandom[random] = true;
+		g_BeaconPlayer[random] = 1;
+		BeaconPlayerTimer(random);
+		CPrintToChatAll("%sPlayer %N has been a beaconed player", PLUGIN_PREFIX, random);
+		g_bIsDone = true;
+	}
+	else
+	{
+		return;
+	}
 }
 
+void RepickRandom(int client, int random)
+{
+	int g_iHumansCount = 0;
+	int g_iHumans[MAXPLAYERS+1];
+	int newRandom = -1;
+	
+	if(IsValidClient(random) && IsPlayerAlive(random) && GetClientTeam(random) == 3 && g_bIsClientRandom[random])
+	{
+		for (int i = 1; i <= MaxClients; i++)
+		{
+			if(IsValidClient(i) && IsPlayerAlive(i) && GetClientTeam(i) == 3 && !g_bIsClientRandom[i])
+			{
+				g_iHumans[g_iHumansCount++] = i;
+			}
+		}
+		
+		RemoveRandom(random);
+		
+		newRandom = g_iHumans[GetRandomInt(0, g_iHumansCount - 1)];
+		
+		if(IsValidClient(newRandom) && IsPlayerAlive(newRandom) && GetClientTeam(newRandom) == 3)
+		{
+			g_bIsClientRandom[newRandom] = true;
+			g_BeaconPlayer[newRandom] = 1;
+			BeaconPlayerTimer(newRandom);
+			CPrintToChatAll("%sPlayer %N has been the new beaconed player instead of %N repicked by %N", PLUGIN_PREFIX, newRandom, random, client);
+		}
+		else if(!IsValidClient(newRandom) || !IsPlayerAlive(newRandom) || GetClientTeam(newRandom) != 3)
+		{
+			CPrintToChatAll("%sRandom Repick has failed!", PLUGIN_PREFIX);
+		}
+	}
+	else
+	{
+		return;
+	}
+}
 
-void DisplayBeaconMenu(int client)
+void ApplyHealBeacon(int client, int random, int newRandom)
+{
+	if(IsValidClient(random) && g_bIsClientRandom[random])
+	{
+		RemoveRandom(random);
+		
+		if(IsValidClient(newRandom) && !g_bIsClientRandom[newRandom])
+		{
+			g_bIsClientRandom[newRandom] = true;
+			g_BeaconPlayer[newRandom] = 1;
+			BeaconPlayerTimer(newRandom);
+			CPrintToChatAll("%sPlayer {yellow}%N{fullred} has been {white}the new heal beaconed player as a replacement of {yellow}%N{white} replaced by Admin {yellow}%N{white}.", PLUGIN_PREFIX, newRandom, random, client);
+		}
+		else
+		{
+			return;
+		}
+	}
+	else
+	{
+		return;
+	}
+}
+			
+void DisplayHealBeaconMenu(int client)
 {
 	Menu menu = new Menu(Menu_MainCallback);
+	menu.SetTitle("Do Actions on the heal beaconed players");
 	
-	char title[64];
-	Format(title, sizeof(title), "Do an Action on the heal beaconed players");
-	menu.SetTitle(title);
-	
-	char buffer1[64], buffer2[64];
-	
-	if(g_iRandom1 != -1)
+	for (int i = 1; i <= MaxClients; i++)
 	{
-		Format(buffer1, sizeof(buffer1), "Do Actions on %N", g_iRandom1);
-		menu.AddItem("option1", buffer1, (g_iRandom1 == -1) ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+		if(IsValidClient(i) && IsPlayerAlive(i) && GetClientTeam(i) == 3 && g_bIsClientRandom[i])
+		{
+			int userid = GetClientUserId(i);
+			
+			char info[64], buffer[32];
+			Format(buffer, 32, "Do Actions on %N", GetClientOfUserId(userid));
+			
+			IntToString(userid, info, 64);
+			
+			menu.AddItem(info, buffer);
+		}
 	}
-	if(g_iRandom2 != -1)
-	{
-		Format(buffer2, sizeof(buffer2), "Do Actions on %N", g_iRandom2);
-		menu.AddItem("option2", buffer2, (g_iRandom2 == -1) ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
-	}
 	
-	menu.AddItem("empty1", "", ITEMDRAW_SPACER);
-	menu.AddItem("empty2", "", ITEMDRAW_SPACER);
+	menu.AddItem("option2", "Change Heal Beacon Settings");
 	
-	menu.AddItem("option3", "Set Heal Beacon on a Player");
-	menu.AddItem("option4", "Change Heal Beacon Settings");
-	
-	menu.ExitBackButton = true;
 	menu.Display(client, MENU_TIME_FOREVER);
+	menu.ExitBackButton = true;
 }
 
 void DisplaySettingsMenu(int client)
@@ -1954,292 +1499,130 @@ void DisplayBeaconLifeTimeMenu(int client)
 	menu.ExitBackButton = true;
 	menu.Display(client, MENU_TIME_FOREVER);
 }
+
+void DisplayActionsMenu(int client, int random)
+{
+	if(IsValidClient(random) && IsPlayerAlive(random) && GetClientTeam(random) == 3 && g_bIsClientRandom[random])
+	{
+		Menu menu = new Menu(Menu_ActionsCallback); 
 		
-void DisplayMenuForFirst(int client)
-{
-	Menu menu = new Menu(Menu_FirstCallback);
-	
-	char title[64];
-	Format(title, sizeof(title), "Do an Action on %N", g_iRandom1);
-	menu.SetTitle(title);
-	
-	menu.AddItem("0", "Repick randomly");
-	menu.AddItem("1", "Change Beacon Color");
-	menu.AddItem("2", "Change beacon radius and distance");
-	menu.AddItem("3", "Toggle Light on the player");
-	menu.AddItem("4", "Change light color on the player", (g_bHasNeon[g_iRandom1] == true) ? ITEMDRAW_DEFAULT : ITEMDRAW_DISABLED);
-	menu.AddItem("5", "Teleport to player");
-	menu.AddItem("6", "Bring Player");
-	menu.AddItem("7", "Slay Player");
-	
-	menu.ExitBackButton = true;
-	menu.Display(client, MENU_TIME_FOREVER);
-}
-
-void DisplayMenuForSecond(int client)
-{
-	Menu menu = new Menu(Menu_SecondCallback);
-	
-	char title[64];
-	Format(title, sizeof(title), "Do an Action on %N", g_iRandom2);
-	menu.SetTitle(title);
-	
-	menu.AddItem("0", "Repick randomly");
-	menu.AddItem("1", "Change Beacon Color");
-	menu.AddItem("2", "Change beacon radius and distance");
-	menu.AddItem("3", "Toggle Light on the player");
-	menu.AddItem("4", "Change light color on the player", (g_bHasNeon[g_iRandom2] == true) ? ITEMDRAW_DEFAULT : ITEMDRAW_DISABLED);
-	menu.AddItem("5", "Teleport to player");
-	menu.AddItem("6", "Bring Player");
-	menu.AddItem("7", "Slay Player");
-	
-	menu.ExitBackButton = true;
-	menu.Display(client, MENU_TIME_FOREVER);
-}
-
-void DisplayBeaconColorsMenuForFirst(int client)
-{
-	Menu menu = new Menu(Menu_BeaconColorsFirstCallback);
-	
-	char title[64];
-	Format(title, sizeof(title), "Change beacon color on %N", g_iRandom1);
-	menu.SetTitle(title);
-	
-	menu.AddItem("0", "White");
-	menu.AddItem("1", "Red");
-	menu.AddItem("2", "Lime");
-	menu.AddItem("3", "Blue");
-	menu.AddItem("4", "Yellow");
-	menu.AddItem("5", "Cyan");
-	menu.AddItem("6", "Gold");
-	
-	menu.ExitBackButton = true;
-	menu.Display(client, MENU_TIME_FOREVER);
-}
-
-void DisplayBeaconColorsMenuForSecond(int client)
-{
-	Menu menu = new Menu(Menu_BeaconColorsSecondCallback);
-	
-	char title[64];
-	Format(title, sizeof(title), "Change beacon color on %N", g_iRandom2);
-	menu.SetTitle(title);
-	
-	menu.AddItem("0", "White");
-	menu.AddItem("1", "Red");
-	menu.AddItem("2", "Lime");
-	menu.AddItem("3", "Blue");
-	menu.AddItem("4", "Yellow");
-	menu.AddItem("5", "Cyan");
-	menu.AddItem("6", "Gold");
-	
-	menu.ExitBackButton = true;
-	menu.Display(client, MENU_TIME_FOREVER);
-}
-
-void DisplayNeonColorsMenuForFirst(int client)
-{
-	Menu menu = new Menu(Menu_NeonColorsFirstCallback);
-	
-	char title[64];
-	Format(title, sizeof(title), "Change beacon color on", g_iRandom1);
-	menu.SetTitle(title);
-	
-	menu.AddItem("0", "White");
-	menu.AddItem("1", "Red");
-	menu.AddItem("2", "Lime");
-	menu.AddItem("3", "Blue");
-	menu.AddItem("4", "Yellow");
-	menu.AddItem("5", "Cyan");
-	menu.AddItem("6", "Gold");
-	
-	menu.ExitBackButton = true;
-	menu.Display(client, MENU_TIME_FOREVER);
-}
-
-void DisplayNeonColorsMenuForSecond(int client)
-{
-	Menu menu = new Menu(Menu_NeonColorsSecondCallback);
-	
-	char title[64];
-	Format(title, sizeof(title), "Change beacon color on %N", g_iRandom2);
-	menu.SetTitle(title);
-	
-	menu.AddItem("0", "White");
-	menu.AddItem("1", "Red");
-	menu.AddItem("2", "Lime");
-	menu.AddItem("3", "Blue");
-	menu.AddItem("4", "Yellow");
-	menu.AddItem("5", "Cyan");
-	menu.AddItem("6", "Gold");
-	
-	menu.ExitBackButton = true;
-	menu.Display(client, MENU_TIME_FOREVER);
-}
-
-void DisplayBeaconRadiusMenuForFirst(int client)
-{
-	Menu menu = new Menu(Menu_BeaconRadiusFirstCallback);
-	
-	char title[64];
-	Format(title, sizeof(title), "Change beacon radius and distance on %N", g_iRandom1);
-	menu.SetTitle(title);
-
-	char buf00[64], buf10[64];
-	char buf01[64], buf20[64];
-	char buf02[64], buf30[64];
-	char buf03[64], buf40[64];
-	char buf04[64], buf50[64];
-	char buf05[64], buf60[64];
-	
-	for (int i = 0; i <= 1500; i++)
-	{
-		if(i == 200)
-		{
-			IntToString(i, buf00, sizeof(buf00));
-			Format(buf10, sizeof(buf10), "%d", i);
-			menu.AddItem(buf00, buf10);
-		}
-		if(i == 400)
-		{
-			IntToString(i, buf01, sizeof(buf01));
-			Format(buf20, sizeof(buf20), "%d", i);
-			menu.AddItem(buf01, buf20);
-		}
-		if(i == 600)
-		{
-			IntToString(i, buf02, sizeof(buf02));
-			Format(buf30, sizeof(buf30), "%d", i);
-			menu.AddItem(buf02, buf30);
-		}
-		if(i == 800)
-		{
-			IntToString(i, buf03, sizeof(buf03));
-			Format(buf40, sizeof(buf40), "%d", i);
-			menu.AddItem(buf03, buf40);
-		}
-		if(i == 1000)
-		{
-			IntToString(i, buf04, sizeof(buf04));
-			Format(buf50, sizeof(buf50), "%d", i);
-			menu.AddItem(buf04, buf50);
-		}
-		if(i == 1500)
-		{
-			IntToString(i, buf05, sizeof(buf05));
-			Format(buf60, sizeof(buf60), "%d", i);
-			menu.AddItem(buf05, buf60);
-		}
+		char title[64], buffer[32];
+		Format(title, sizeof(title), "Do an Action on %N", random);
+		menu.SetTitle(title);
+		
+		int userid = GetClientUserId(random);
+		IntToString(userid, buffer, 32);
+		
+		menu.AddItem(buffer, "Repick randomly");
+		menu.AddItem(buffer, "Change Beacon Color");
+		menu.AddItem(buffer, "Change beacon radius and distance");
+		
+		char light[32];
+		g_bHasNeon[random] ? Format(light, 32, "Disable Light on the player") : Format(light, 32, "Enable Light on the player");	
+		menu.AddItem(buffer, light);
+		
+		menu.AddItem(buffer, "Change light color on the player", g_bHasNeon[random] ? ITEMDRAW_DEFAULT : ITEMDRAW_DISABLED);
+		menu.AddItem(buffer, "Teleport to player");
+		menu.AddItem(buffer, "Bring Player");
+		menu.AddItem(buffer, "Remove Heal beacon");
+		menu.AddItem(buffer, "Slay Player");
+		
+		menu.ExitBackButton = true;
+		menu.Display(client, MENU_TIME_FOREVER);
 	}
-	
-	menu.AddItem("Empty", "These are the available distances please type sm_beacon_distance <1|2> <your number> instead", ITEMDRAW_DISABLED);
-	
-	menu.ExitBackButton = true;
-	menu.Display(client, MENU_TIME_FOREVER);
 }
 
-void DisplayBeaconRadiusMenuForSecond(int client)
+void DisplayBeaconColorsMenu(int client, int random)
 {
-	Menu menu = new Menu(Menu_BeaconRadiusSecondCallback);
-	
-	char title[64];
-	Format(title, sizeof(title), "Change beacon radius and distance on %N", g_iRandom2);
-	menu.SetTitle(title);
-
-	char buf00[64], buf10[64];
-	char buf01[64], buf20[64];
-	char buf02[64], buf30[64];
-	char buf03[64], buf40[64];
-	char buf04[64], buf50[64];
-	char buf05[64], buf60[64];
-	
-	for (int i = 0; i <= 1500; i++)
+	if(IsValidClient(random) && IsPlayerAlive(random) && GetClientTeam(random) && g_bIsClientRandom[random])
 	{
-		if(i == 200)
-		{
-			IntToString(i, buf00, sizeof(buf00));
-			Format(buf10, sizeof(buf10), "%d", i);
-			menu.AddItem(buf00, buf10);
-		}
-		if(i == 400)
-		{
-			IntToString(i, buf01, sizeof(buf01));
-			Format(buf20, sizeof(buf20), "%d", i);
-			menu.AddItem(buf01, buf20);
-		}
-		if(i == 600)
-		{
-			IntToString(i, buf02, sizeof(buf02));
-			Format(buf30, sizeof(buf30), "%d", i);
-			menu.AddItem(buf02, buf30);
-		}
-		if(i == 800)
-		{
-			IntToString(i, buf03, sizeof(buf03));
-			Format(buf40, sizeof(buf40), "%d", i);
-			menu.AddItem(buf03, buf40);
-		}
-		if(i == 1000)
-		{
-			IntToString(i, buf04, sizeof(buf04));
-			Format(buf50, sizeof(buf50), "%d", i);
-			menu.AddItem(buf04, buf50);
-		}
-		if(i == 1500)
-		{
-			IntToString(i, buf05, sizeof(buf05));
-			Format(buf60, sizeof(buf60), "%d", i);
-			menu.AddItem(buf05, buf60);
-		}
+		Menu menu = new Menu(Menu_BeaconColorsCallback);
+		
+		char title[64];
+		Format(title, sizeof(title), "Change beacon color on %N", random);
+		menu.SetTitle(title);
+		
+		char buffer[32];
+		int userid = GetClientUserId(random);
+			
+		IntToString(userid, buffer, 32);
+		
+		menu.AddItem(buffer, "White");
+		menu.AddItem(buffer, "Red");
+		menu.AddItem(buffer, "Lime");
+		menu.AddItem(buffer, "Blue");
+		menu.AddItem(buffer, "Yellow");
+		menu.AddItem(buffer, "Cyan");
+		menu.AddItem(buffer, "Gold");
+		
+		menu.ExitBackButton = true;
+		menu.Display(client, MENU_TIME_FOREVER);
 	}
-	
-	menu.AddItem("Empty", "These are the available distances please type sm_beacon_distance <1|2> <your number> instead", ITEMDRAW_DISABLED);
-	
-	menu.ExitBackButton = true;
-	menu.Display(client, MENU_TIME_FOREVER);
+	else
+	{
+		return;
+	}
 }
 
-void DisplaySetBeaconNumsMenu(int client)
+void DisplayNeonColorsMenu(int client, int random)
 {
-	Menu menu = new Menu(Menu_SetBeaconNumsMenu);
-	
-	char title[64];
-	Format(title, sizeof(title), "Choose one index");
-	menu.SetTitle(title);
-	
-	menu.AddItem("0", "1");
-	menu.AddItem("1", "2");
-	
-	menu.ExitButton = true;
-	menu.Display(client, MENU_TIME_FOREVER);
+	if(IsValidClient(random) && IsPlayerAlive(random) && GetClientTeam(random) && g_bIsClientRandom[random])
+	{
+		Menu menu = new Menu(Menu_NeonColorsCallback);
+		
+		char title[64];
+		Format(title, sizeof(title), "Change beacon color on %N", random);
+		menu.SetTitle(title);
+		
+		char buffer[32];
+		int userid = GetClientUserId(random);
+		
+		IntToString(userid, buffer, 32);
+		
+		menu.AddItem(buffer, "White");
+		menu.AddItem(buffer, "Red");
+		menu.AddItem(buffer, "Lime");
+		menu.AddItem(buffer, "Blue");
+		menu.AddItem(buffer, "Yellow");
+		menu.AddItem(buffer, "Cyan");
+		menu.AddItem(buffer, "Gold");
+		
+		menu.ExitBackButton = true;
+		menu.Display(client, MENU_TIME_FOREVER);
+	}
+	else
+	{
+		return;
+	}
 }
 
-void DisplaySetBeaconFirstMenu(int client)
+void DisplayBeaconRadiusMenu(int client, int random)
 {
-	Menu menu = new Menu(Menu_SetBeaconFirstMenu);
-	
-	char title[64];
-	Format(title, sizeof(title), "Choose a player");
-	menu.SetTitle(title);
-	
-	AddTargetsToMenu2(menu, client, COMMAND_FILTER_ALIVE | COMMAND_FILTER_CONNECTED);
-	
-	menu.ExitBackButton = true;
-	menu.Display(client, MENU_TIME_FOREVER);
-}
-
-void DisplaySetBeaconSecondMenu(int client)
-{
-	Menu menu = new Menu(Menu_SetBeaconSecondMenu);
-	
-	char title[64];
-	Format(title, sizeof(title), "Choose a player");
-	menu.SetTitle(title);
-	
-	AddTargetsToMenu2(menu, client, COMMAND_FILTER_ALIVE | COMMAND_FILTER_CONNECTED);
-	
-	menu.ExitBackButton = true;
-	menu.Display(client, MENU_TIME_FOREVER);
+	if(IsValidClient(random) && IsPlayerAlive(random) && GetClientTeam(random) && g_bIsClientRandom[random])
+	{
+		Menu menu = new Menu(Menu_BeaconRadiusCallback);
+		
+		char title[64];
+		Format(title, sizeof(title), "Change beacon radius and distance on %N", random);
+		menu.SetTitle(title);
+		
+		char buffer[32];
+		int userid = GetClientUserId(random);
+		
+		IntToString(userid, buffer, 32);
+		
+		menu.AddItem(buffer, "200");
+		menu.AddItem(buffer, "400");
+		menu.AddItem(buffer, "600");
+		menu.AddItem(buffer, "800");
+		menu.AddItem(buffer, "1000");
+		menu.AddItem(buffer, "1500");
+		
+		menu.AddItem("Empty", "These are the available distances please type sm_beacon_distance <1|2> <your number> instead", ITEMDRAW_DISABLED);
+		
+		menu.ExitBackButton = true;
+		menu.Display(client, MENU_TIME_FOREVER);
+	}
 }
 
 void SetClientNeon(int client)
@@ -2297,12 +1680,6 @@ void TeleportToRandom(int client, int random)
 	TeleportEntity(client, fOrigin, NULL_VECTOR, NULL_VECTOR);
 }
 
-void ResetValues(int client)
-{
-	iCount[client] = 0;
-	g_BeaconPlayer[client] = 0;
-}
-
 void DoProgressBeaconColor(int random, int color[4])
 {
 	if(random != -1)
@@ -2342,7 +1719,252 @@ void EndRound()
 	g_bNoBeacon = true;
 }
 
+int GetCurrentRandoms()
+{
+	int iRandomsCounter = 0;
+	
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if(IsValidClient(i) && IsPlayerAlive(i) && GetClientTeam(i) == 3 && g_bIsClientRandom[i])
+			iRandomsCounter++;
+	}
+	
+	return iRandomsCounter;
+}
+
+void RemoveRandom(int client)
+{
+	g_bIsClientRandom[client] = false;
+	g_BeaconPlayer[client] = 0;
+	RemoveNeon(client);
+	BeaconTimer[client] = null;
+	if(BeaconTimer[client] != INVALID_HANDLE)
+		delete BeaconTimer[client];
+}
+
+void ResetValues(int client)
+{
+	iCount[client] = 0;
+	g_BeaconPlayer[client] = 0;
+}
+
+void DeleteAllHandles(int client)
+{	
+	BeaconTimer[client] = null;
+	g_hHudTimer[client] = null;
+	g_hDistanceTimer[client] = null;
+	DistanceTimerHandle[client] = null;
+	
+	if(BeaconTimer[client] != INVALID_HANDLE)
+		delete BeaconTimer[client];
+					
+	if(g_hHudTimer[client] != INVALID_HANDLE)
+		delete g_hHudTimer[client];
+
+					
+	if(g_hDistanceTimer[client] != INVALID_HANDLE)
+		delete g_hDistanceTimer[client];
+						
+	if(DistanceTimerHandle[client] != INVALID_HANDLE)
+		delete DistanceTimerHandle[client];
+}
+
+void CheckDistanceForNoMode(int client, int randomPlayer)
+{
+	if(GetDistanceBetween(client, randomPlayer) < (g_fClientDistance[randomPlayer] / 2.0))
+	{
+		if(!g_bMaxHealth[client])
+		{
+			if(GetEntProp(client, Prop_Send, "m_iHealth") < GetEntProp(client, Prop_Data, "m_iMaxHealth"))
+			{
+				SetEntProp(client, Prop_Send, "m_iHealth", GetEntProp(client, Prop_Send, "m_iHealth") + 1);
+								
+				if(GetEntProp(client, Prop_Send, "m_iHealth") == GetEntProp(client, Prop_Data, "m_iMaxHealth"))
+				{
+					g_bMaxHealth[client] = true;
+				}
+			}
+		}
+						
+		g_bCloseToBeacon[client] = true;
+	}
+	else if(GetDistanceBetween(client, randomPlayer) > (g_fClientDistance[randomPlayer] / 2.0) && !g_bCloseToBeacon[client])
+	{
+		g_iHealth[client] = GetEntProp(client, Prop_Send, "m_iHealth");
+		ShowSyncHudText(client, g_HudMsg, "WARNING: YOU ARE TOO FAR AWAY FROM THE BEACONED PLAYERS PLEASE GET CLOSER TO THEM");
+		DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
+		g_bMaxHealth[client] = false;
+		g_bCloseToBeacon[client] = false;
+	}
+}
+
+void CheckDistanceForNoModeForTwo(int client, int randomPlayer0, int randomPlayer1)
+{
+	if(GetDistanceBetween(client, randomPlayer0) < (g_fClientDistance[randomPlayer0] / 2.0) || GetDistanceBetween(client, randomPlayer1) < (g_fClientDistance[randomPlayer1] / 2.0))
+	{
+		if(!g_bMaxHealth[client])
+		{
+			if(GetEntProp(client, Prop_Send, "m_iHealth") < GetEntProp(client, Prop_Data, "m_iMaxHealth"))
+			{
+				SetEntProp(client, Prop_Send, "m_iHealth", GetEntProp(client, Prop_Send, "m_iHealth") + 1);
+								
+				if(GetEntProp(client, Prop_Send, "m_iHealth") == GetEntProp(client, Prop_Data, "m_iMaxHealth"))
+				{
+					g_bMaxHealth[client] = true;
+				}
+			}
+		}
+						
+		g_bCloseToBeacon[client] = true;
+	}
+	else if(GetDistanceBetween(client, randomPlayer0) > (g_fClientDistance[randomPlayer0] / 2.0) && GetDistanceBetween(client, randomPlayer1) > (g_fClientDistance[randomPlayer1] / 2.0) && !g_bCloseToBeacon[client])
+	{
+		g_iHealth[client] = GetEntProp(client, Prop_Send, "m_iHealth");
+		ShowSyncHudText(client, g_HudMsg, "WARNING: YOU ARE TOO FAR AWAY FROM THE BEACONED PLAYERS PLEASE GET CLOSER TO THEM");
+		DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
+		g_bMaxHealth[client] = false;
+		g_bCloseToBeacon[client] = false;
+	}
+}
+
+void CheckDistanceForNoModeForThree(int client, int randomPlayer0, int randomPlayer1, int randomPlayer2)
+{
+	if(GetDistanceBetween(client, randomPlayer0) < (g_fClientDistance[randomPlayer0] / 2.0) || GetDistanceBetween(client, randomPlayer1) < (g_fClientDistance[randomPlayer1] / 2.0) || GetDistanceBetween(client, randomPlayer2) < (g_fClientDistance[randomPlayer2] / 2.0))
+	{
+		if(!g_bMaxHealth[client])
+		{
+			if(GetEntProp(client, Prop_Send, "m_iHealth") < GetEntProp(client, Prop_Data, "m_iMaxHealth"))
+			{
+				SetEntProp(client, Prop_Send, "m_iHealth", GetEntProp(client, Prop_Send, "m_iHealth") + 1);
+								
+				if(GetEntProp(client, Prop_Send, "m_iHealth") == GetEntProp(client, Prop_Data, "m_iMaxHealth"))
+				{
+					g_bMaxHealth[client] = true;
+				}
+			}
+		}
+						
+		g_bCloseToBeacon[client] = true;
+	}
+	else if(GetDistanceBetween(client, randomPlayer0) > (g_fClientDistance[randomPlayer0] / 2.0) && GetDistanceBetween(client, randomPlayer1) > (g_fClientDistance[randomPlayer1] / 2.0) && GetDistanceBetween(client, randomPlayer2) > (g_fClientDistance[randomPlayer2] / 2.0) && !g_bCloseToBeacon[client])
+	{
+		g_iHealth[client] = GetEntProp(client, Prop_Send, "m_iHealth");
+		ShowSyncHudText(client, g_HudMsg, "WARNING: YOU ARE TOO FAR AWAY FROM THE BEACONED PLAYERS PLEASE GET CLOSER TO THEM");
+		DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
+		g_bMaxHealth[client] = false;
+		g_bCloseToBeacon[client] = false;
+	}
+}
+
+void CheckDistanceForNoModeForFour(int client, int randomPlayer0, int randomPlayer1, int randomPlayer2, int randomPlayer3)
+{
+	if(GetDistanceBetween(client, randomPlayer0) < (g_fClientDistance[randomPlayer0] / 2.0) || GetDistanceBetween(client, randomPlayer1) < (g_fClientDistance[randomPlayer1] / 2.0) || GetDistanceBetween(client, randomPlayer2) < (g_fClientDistance[randomPlayer2] / 2.0) || GetDistanceBetween(client, randomPlayer3) < (g_fClientDistance[randomPlayer3] / 2.0))
+	{
+		if(!g_bMaxHealth[client])
+		{
+			if(GetEntProp(client, Prop_Send, "m_iHealth") < GetEntProp(client, Prop_Data, "m_iMaxHealth"))
+			{
+				SetEntProp(client, Prop_Send, "m_iHealth", GetEntProp(client, Prop_Send, "m_iHealth") + 1);
+								
+				if(GetEntProp(client, Prop_Send, "m_iHealth") == GetEntProp(client, Prop_Data, "m_iMaxHealth"))
+				{
+					g_bMaxHealth[client] = true;
+				}
+			}
+		}
+						
+		g_bCloseToBeacon[client] = true;
+	}
+	else if(GetDistanceBetween(client, randomPlayer0) > (g_fClientDistance[randomPlayer0] / 2.0) && GetDistanceBetween(client, randomPlayer1) > (g_fClientDistance[randomPlayer1] / 2.0) && GetDistanceBetween(client, randomPlayer2) > (g_fClientDistance[randomPlayer2] / 2.0) && GetDistanceBetween(client, randomPlayer3) > (g_fClientDistance[randomPlayer3] / 2.0) && !g_bCloseToBeacon[client])
+	{
+		g_iHealth[client] = GetEntProp(client, Prop_Send, "m_iHealth");
+		ShowSyncHudText(client, g_HudMsg, "WARNING: YOU ARE TOO FAR AWAY FROM THE BEACONED PLAYERS PLEASE GET CLOSER TO THEM");
+		DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
+		g_bMaxHealth[client] = false;
+		g_bCloseToBeacon[client] = false;
+	}
+}
+
+void CheckDistanceForNoModeForFive(int client, int randomPlayer0, int randomPlayer1, int randomPlayer2, int randomPlayer3, int randomPlayer4)
+{
+	if(GetDistanceBetween(client, randomPlayer0) < (g_fClientDistance[randomPlayer0] / 2.0) || GetDistanceBetween(client, randomPlayer1) < (g_fClientDistance[randomPlayer1] / 2.0) || GetDistanceBetween(client, randomPlayer2) < (g_fClientDistance[randomPlayer2] / 2.0) || GetDistanceBetween(client, randomPlayer3) < (g_fClientDistance[randomPlayer3] / 2.0) || GetDistanceBetween(client, randomPlayer4) < (g_fClientDistance[randomPlayer4] / 2.0)) 
+	{
+		if(!g_bMaxHealth[client])
+		{
+			if(GetEntProp(client, Prop_Send, "m_iHealth") < GetEntProp(client, Prop_Data, "m_iMaxHealth"))
+			{
+				SetEntProp(client, Prop_Send, "m_iHealth", GetEntProp(client, Prop_Send, "m_iHealth") + 1);
+								
+				if(GetEntProp(client, Prop_Send, "m_iHealth") == GetEntProp(client, Prop_Data, "m_iMaxHealth"))
+				{
+					g_bMaxHealth[client] = true;
+				}
+			}
+		}
+						
+		g_bCloseToBeacon[client] = true;
+	}
+	else if(GetDistanceBetween(client, randomPlayer0) > (g_fClientDistance[randomPlayer0] / 2.0) && GetDistanceBetween(client, randomPlayer1) > (g_fClientDistance[randomPlayer1] / 2.0) && GetDistanceBetween(client, randomPlayer2) > (g_fClientDistance[randomPlayer2] / 2.0) && GetDistanceBetween(client, randomPlayer3) > (g_fClientDistance[randomPlayer3] / 2.0) && GetDistanceBetween(client, randomPlayer4) > (g_fClientDistance[randomPlayer4] / 2.0) && !g_bCloseToBeacon[client])
+	{
+		g_iHealth[client] = GetEntProp(client, Prop_Send, "m_iHealth");
+		ShowSyncHudText(client, g_HudMsg, "WARNING: YOU ARE TOO FAR AWAY FROM THE BEACONED PLAYERS PLEASE GET CLOSER TO THEM");
+		DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
+		g_bMaxHealth[client] = false;
+		g_bCloseToBeacon[client] = false;
+	}
+}
+
+void CheckDistanceForMode(int client, int randomPlayer)
+{
+	if(GetDistanceBetween(client, randomPlayer) > (g_fClientDistance[randomPlayer] / 2.0))
+	{
+		ShowSyncHudText(client, g_HudMsg, "WARNING: YOU ARE TOO FAR AWAY FROM THE BEACONED PLAYERS PLEASE GET CLOSER TO THEM");
+		DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
+	}
+}
+
+void CheckDistanceForModeForTwo(int client, int randomPlayer0, int randomPlayer1)
+{
+	if(GetDistanceBetween(client, randomPlayer0) > (g_fClientDistance[randomPlayer0] / 2.0) && GetDistanceBetween(client, randomPlayer1) > (g_fClientDistance[randomPlayer1] / 2.0))
+	{
+		ShowSyncHudText(client, g_HudMsg, "WARNING: YOU ARE TOO FAR AWAY FROM THE BEACONED PLAYERS PLEASE GET CLOSER TO THEM");
+		DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
+	}
+}
+
+void CheckDistanceForModeForThree(int client, int randomPlayer0, int randomPlayer1, int randomPlayer2)
+{
+	if(GetDistanceBetween(client, randomPlayer0) > (g_fClientDistance[randomPlayer0] / 2.0) && GetDistanceBetween(client, randomPlayer1) > (g_fClientDistance[randomPlayer1] / 2.0) && GetDistanceBetween(client, randomPlayer2) > (g_fClientDistance[randomPlayer2] / 2.0))
+	{
+		ShowSyncHudText(client, g_HudMsg, "WARNING: YOU ARE TOO FAR AWAY FROM THE BEACONED PLAYERS PLEASE GET CLOSER TO THEM");
+		DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
+	}
+}
+
+void CheckDistanceForModeForFour(int client, int randomPlayer0, int randomPlayer1, int randomPlayer2, int randomPlayer3)
+{
+	if(GetDistanceBetween(client, randomPlayer0) > (g_fClientDistance[randomPlayer0] / 2.0) && GetDistanceBetween(client, randomPlayer1) > (g_fClientDistance[randomPlayer1] / 2.0) && GetDistanceBetween(client, randomPlayer2) > (g_fClientDistance[randomPlayer2] / 2.0) && GetDistanceBetween(client, randomPlayer3) > (g_fClientDistance[randomPlayer3] / 2.0))
+	{
+		ShowSyncHudText(client, g_HudMsg, "WARNING: YOU ARE TOO FAR AWAY FROM THE BEACONED PLAYERS PLEASE GET CLOSER TO THEM");
+		DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
+	}
+}
+
+void CheckDistanceForModeForFive(int client, int randomPlayer0, int randomPlayer1, int randomPlayer2, int randomPlayer3, int randomPlayer4)
+{
+	if(GetDistanceBetween(client, randomPlayer0) > (g_fClientDistance[randomPlayer0] / 2.0) && GetDistanceBetween(client, randomPlayer1) > (g_fClientDistance[randomPlayer1] / 2.0) && GetDistanceBetween(client, randomPlayer2) > (g_fClientDistance[randomPlayer2] / 2.0) && GetDistanceBetween(client, randomPlayer3) > (g_fClientDistance[randomPlayer3] / 2.0) && GetDistanceBetween(client, randomPlayer4) > (g_fClientDistance[randomPlayer4] / 2.0))
+	{
+		ShowSyncHudText(client, g_HudMsg, "WARNING: YOU ARE TOO FAR AWAY FROM THE BEACONED PLAYERS PLEASE GET CLOSER TO THEM");
+		DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
+	}
+}
+
 bool IsValidClient(int client)
 {
 	return (1 <= client <= MaxClients && IsClientInGame(client) && !IsClientSourceTV(client));
 }
+
+stock bool IsClientRandom(int client)
+{
+	return (1 <= client <= MaxClients && IsValidClient(client) && IsPlayerAlive(client) && GetClientTeam(client) == 3 && g_bIsClientRandom[client]);
+}					
