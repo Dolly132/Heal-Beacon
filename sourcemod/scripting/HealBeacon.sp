@@ -9,6 +9,7 @@
 #include <multicolors>
 #include <zombiereloaded>
 #include <adminmenu>
+#include <clientprefs>
 #include <HealBeacon>
 
 #define PLUGIN_DESCRIPTION "Sets beacon to 2 random players and damage whoever is far from them"
@@ -45,6 +46,7 @@ int g_ColorGold[4] =  {255, 215, 0, 255};
 int iRandomsCount;
 
 bool g_bRoundStart;
+bool g_bRoundEnd;
 bool g_bIsDone;
 bool g_bHasNeon[MAXPLAYERS+1];
 bool g_bModeIsEnabled;
@@ -52,21 +54,28 @@ bool g_bMaxHealth[MAXPLAYERS+1];
 bool g_bNoBeacon;
 bool g_bIsClientRandom[MAXPLAYERS+1];
 bool g_bCloseToBeacon[MAXPLAYERS+1];
+bool g_bIsHudEnabled[MAXPLAYERS+1] = true;
 
 ConVar g_cvEnabled;
 ConVar g_cvTimer;
 ConVar g_cvDamage;
-ConVar g_cvLifeTime;
 ConVar g_cvRandoms;
 
 Handle BeaconTimer[MAXPLAYERS+1] = {INVALID_HANDLE, ...};
 Handle DistanceTimerHandle[MAXPLAYERS + 1] =  {INVALID_HANDLE, ...};
+
 Handle g_HudMsg = INVALID_HANDLE;
+Handle g_hRandomsMsg1 = INVALID_HANDLE;
+Handle g_hRandomsMsg2 = INVALID_HANDLE;
+Handle g_hRandomsMsg3 = INVALID_HANDLE;
+Handle g_hRandomsMsg4 = INVALID_HANDLE;
+Handle g_hRandomsMsg5 = INVALID_HANDLE;
+
 Handle g_hRoundStart_Timer = INVALID_HANDLE;
 Handle g_hHudTimer[MAXPLAYERS+1] = {INVALID_HANDLE, ...};
 Handle g_hDistanceTimer[MAXPLAYERS+1] = {INVALID_HANDLE, ...};
-Handle g_hRoundEndTimer = INVALID_HANDLE;
 Handle g_hRandomsTimer = INVALID_HANDLE;
+Handle g_hHudCookie = INVALID_HANDLE;
 
 
 public void OnPluginStart()
@@ -74,7 +83,6 @@ public void OnPluginStart()
 	g_cvEnabled = CreateConVar("sm_enable_healbeacon", "0", PLUGIN_DESCRIPTION);
 	g_cvTimer = CreateConVar("sm_beacon_timer", "20.0", "The time that will start picking random players at round start");
 	g_cvDamage = CreateConVar("sm_beacon_damage", "5", "The damage that the heal beacon will give");
-	g_cvLifeTime = CreateConVar("sm_beacon_lifetime", "1.0", "Life time of the beacon");
 	g_cvRandoms = CreateConVar("sm_healbeacon_randoms", "2", "How many random players should get the heal beacon");
 	
 	g_cvEnabled.AddChangeHook(OnConVarChange);
@@ -91,9 +99,29 @@ public void OnPluginStart()
 	RegAdminCmd("sm_addnewbeacon", Command_AddNewBeacon, ADMFLAG_BAN, "Add a new heal beaconed player");
 	RegAdminCmd("sm_removebeacon", Command_RemoveBeacon, ADMFLAG_BAN, "Remove heal beacon player");
 	RegAdminCmd("sm_checkdistance", Command_CheckDistance, ADMFLAG_BAN, "...");
+	RegConsoleCmd("sm_healbeaconhud", Command_HealBeaconHud);
+	
+	g_hHudCookie = RegClientCookie("HudCookie", "Hud Cookie", CookieAccess_Public);
 	
 	g_HudMsg = CreateHudSynchronizer();
-	SetHudTextParams(-1.0, 0.2, 1.0, 0, 255, 255, 255);
+	g_hRandomsMsg1 = CreateHudSynchronizer();
+	g_hRandomsMsg2 = CreateHudSynchronizer();
+	g_hRandomsMsg3 = CreateHudSynchronizer();
+	g_hRandomsMsg4 = CreateHudSynchronizer();
+	g_hRandomsMsg5 = CreateHudSynchronizer();
+	
+	
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if(IsValidClient(i))
+		{
+			OnClientPutInServer(i);
+			if(AreClientCookiesCached(i))
+			{
+				OnClientCookiesCached(i);
+			}
+		}
+	}
 	
 	AutoExecConfig();
 }
@@ -134,6 +162,19 @@ public void OnRandomsConVarChange(ConVar convar, char[] oldValue, char[] newValu
 	}
 }
 
+public void OnClientPutInServer(int client)
+{
+	g_bIsHudEnabled[client] = true;
+}
+
+public void OnClientCookiesCached(int client)
+{
+	char sValue[2];
+	GetClientCookie(client, g_hHudCookie, sValue, 2);
+	
+	g_bIsHudEnabled[client] = view_as<bool>(StringToInt(sValue));
+}
+
 public void OnMapStart()
 {
 	g_LaserSprite = PrecacheModel("sprites/laser.vmt");
@@ -141,9 +182,7 @@ public void OnMapStart()
 }
 
 public Action Event_RoundStart(Event event, const char[] name, bool dontBroadcast)
-{
-	g_bRoundStart = true;
-		
+{	
 	g_bIsDone = false;
 		
 	g_bModeIsEnabled = false;
@@ -152,31 +191,34 @@ public Action Event_RoundStart(Event event, const char[] name, bool dontBroadcas
 	
 	iRandomsCount = 0;
 	
-	g_hRandomsTimer = null;
 	
-	if(g_hRandomsTimer != INVALID_HANDLE)
-		delete g_hRandomsTimer;
-	
-	for(int i = 1; i <= MaxClients; i++)
+	if(GetConVarBool(g_cvEnabled))
 	{
-		if(IsValidClient(i))
+		g_bRoundStart = true;
+		g_bRoundEnd = false;
+		
+		for(int i = 1; i <= MaxClients; i++)
 		{
-			DeleteAllHandles(i);
-			RemoveNeon(i);
-			ResetValues(i);
-			g_fClientDistance[i] = 400.0;
-			g_BeaconPlayer[i] = 0;
-			g_iClientBeaconColor[i] = g_BeaconColor;
-			g_bIsClientRandom[i] = false;
-			g_iHealth[i] = 0;
-			g_bMaxHealth[i] = true;
-			g_bHasNeon[i] = false;
-			SetEntProp(i, Prop_Data, "m_iMaxHealth", 120);
+			if(IsValidClient(i))
+			{
+				DeleteAllHandles(i);
+				RemoveNeon(i);
+				ResetValues(i);
+				g_fClientDistance[i] = 400.0;
+				g_BeaconPlayer[i] = 0;
+				g_iClientBeaconColor[i] = g_BeaconColor;
+				g_bIsClientRandom[i] = false;
+				g_iHealth[i] = 0;
+				g_bMaxHealth[i] = true;
+				g_bHasNeon[i] = false;
+				SetEntProp(i, Prop_Data, "m_iMaxHealth", 120);
+			}
 		}
+	
+		g_hRoundStart_Timer = CreateTimer(GetConVarFloat(g_cvTimer), RoundStart_Timer);
 	}
 	
-	g_hRoundStart_Timer = CreateTimer(GetConVarFloat(g_cvTimer), RoundStart_Timer);
-	
+	EntityPointHurt = -1;
 	return Plugin_Continue;
 }
 
@@ -185,31 +227,22 @@ public Action Event_RoundEnd(Event event, const char[] name, bool dontBroadcast)
 	if(g_bRoundStart)
 	{
 		g_bRoundStart = false;
-					
+		g_bRoundEnd = true;
+		
+		delete g_hRandomsTimer;
+		
 		for (int i = 1; i <= MaxClients; i++)
-		{
-			if(IsValidClient(i))
-				DeleteAllHandles(i);
-				
+		{			
 			if(IsValidClient(i) && g_bIsClientRandom[i])
 				g_bIsClientRandom[i] = false;
 		}	
-				
-		g_hRoundStart_Timer = null;
-		g_hRoundEndTimer = null;
 		
-		if(g_hRoundStart_Timer != INVALID_HANDLE)
-			delete g_hRoundStart_Timer;
-
-		if(g_hRoundEndTimer != INVALID_HANDLE)
-			delete g_hRoundEndTimer;		
+		delete g_hRoundStart_Timer;
 	}
-	
-	EntityPointHurt = -1;
 	
 	return Plugin_Continue;
 }
-
+	
 public Action Event_PlayerDeath(Event event, const char[] name, bool dontBroadcast)
 {
 	int client = GetClientOfUserId(GetEventInt(event, "userid"));
@@ -266,7 +299,7 @@ public Action RoundStart_Timer(Handle timer)
 
 		for (int i = 1; i <= MaxClients; i++)
 		{
-			if(IsValidClient(i) && GetClientTeam(i) == 3)
+			if(IsValidClient(i))
 			{
 				g_hHudTimer[i] = CreateTimer(1.0, Hud_Counter, GetClientSerial(i), TIMER_REPEAT);
 				g_hDistanceTimer[i] = CreateTimer(10.0, Distance_Timer, GetClientSerial(i));
@@ -274,13 +307,7 @@ public Action RoundStart_Timer(Handle timer)
 		}	
 	}
 	
-	return Plugin_Continue;
-}
-
-public Action RoundEnd_Timer(Handle timer)
-{
-	CS_TerminateRound(3.0, CSRoundEnd_TerroristWin, false);
-	
+	g_hRoundStart_Timer = null;
 	return Plugin_Handled;
 }
 
@@ -289,8 +316,10 @@ public Action Hud_Counter(Handle timer, int clientserial)
 	int client = GetClientFromSerial(clientserial);
 	
 	if(IsValidClient(client) && IsPlayerAlive(client) && GetClientTeam(client) == 3)
+	{
+		SetHudTextParams(-1.0, 0.2, 1.0, 0, 255, 255, 255);
 		ShowSyncHudText(client, g_HudMsg, "WARNING: DON'T BE FAR AWAY FROM THE BEACONED PLAYERS OR ELSE YOU WILL GET DAMAGED IN %d", iCountdown - iCount[client]);
-	
+	}
 	iCount[client]++;
 	
 	if(iCount[client] >= 10)
@@ -298,7 +327,13 @@ public Action Hud_Counter(Handle timer, int clientserial)
 		g_hHudTimer[client] = null;
 		return Plugin_Stop;
 	}
-		
+	
+	if(g_bRoundEnd)
+	{
+		g_hHudTimer[client] = null;
+		return Plugin_Stop;
+	}
+	
 	return Plugin_Continue;
 }
 
@@ -314,6 +349,12 @@ public Action RandomsTimer(Handle timer)
 		return Plugin_Stop;
 	}
 	
+	if(g_bRoundEnd)
+	{
+		g_hRandomsTimer = null;
+		return Plugin_Stop;
+	}
+	
 	return Plugin_Continue;
 }
 
@@ -323,16 +364,26 @@ public Action Distance_Timer(Handle timer, int clientserial)
 	
 	if(IsValidClient(client) && IsPlayerAlive(client) && GetClientTeam(client) == 3)
 		DistanceTimerHandle[client] = CreateTimer(1.0, DistanceChecker_Timer, GetClientSerial(client), TIMER_REPEAT);
-		
+	
+	if(!IsValidClient(client))
+	{
+		g_hDistanceTimer[client] = null;
+		return Plugin_Stop;
+	}
+	
+	if(g_bRoundEnd)
+	{
+		g_hDistanceTimer[client] = null;
+		return Plugin_Stop;
+	}
+	
+	g_hDistanceTimer[client] = null;
 	return Plugin_Handled;
 }
 
 public Action DistanceChecker_Timer(Handle timer, int clientserial)
 {
 	int client = GetClientFromSerial(clientserial);
-	
-	if(g_bIsClientRandom[client])
-		return Plugin_Handled;
 	
 	if(GetCurrentRandoms() >= 1)
 	{	
@@ -348,9 +399,74 @@ public Action DistanceChecker_Timer(Handle timer, int clientserial)
 		}
 		
 		g_bCloseToBeacon[client] = false;
-	
+		g_bMaxHealth[client] = false;
+		
+		if(IsClientRandom(client))
+		{
+			if(!g_bMaxHealth[client])
+			{
+				if(GetEntProp(client, Prop_Send, "m_iHealth") < GetEntProp(client, Prop_Data, "m_iMaxHealth"))
+				{
+					SetEntProp(client, Prop_Send, "m_iHealth", GetEntProp(client, Prop_Send, "m_iHealth") + 1);
+									
+					if(GetEntProp(client, Prop_Send, "m_iHealth") == GetEntProp(client, Prop_Data, "m_iMaxHealth"))
+					{
+						g_bMaxHealth[client] = true;
+					}
+				}
+			}
+		}
 			
-		if(IsValidClient(client) && IsPlayerAlive(client) && GetClientTeam(client) == 3)
+		if(IsValidClient(client) && g_bIsHudEnabled[client])
+		{
+			if(GetCurrentRandoms() == 1)
+			{
+				SetHudTextParams(0.2, 0.0, 1.0, 0, 128, 235, 128);
+				ShowSyncHudText(client, g_hRandomsMsg1, "Heal Beacon #1 - %N", g_aRandomPlayers.Get(0));
+			}	
+			else if(GetCurrentRandoms() == 2)
+			{
+				SetHudTextParams(0.2, 0.0, 1.0, 255, 128, 255, 255);
+				ShowSyncHudText(client, g_hRandomsMsg1, "Heal Beacon #1 - %N", g_aRandomPlayers.Get(0));
+				SetHudTextParams(0.2, 0.05, 1.0, 0, 128, 235, 128);
+				ShowSyncHudText(client, g_hRandomsMsg2, "Heal Beacon #2 - %N", g_aRandomPlayers.Get(1));
+			}
+			else if(GetCurrentRandoms() == 3)
+			{
+				SetHudTextParams(0.2, 0.0, 1.0, 255, 128, 255, 255);
+				ShowSyncHudText(client, g_hRandomsMsg1, "Heal Beacon #1 - %N", g_aRandomPlayers.Get(0));
+				SetHudTextParams(0.2, 0.05, 1.0, 232, 216, 255, 255);
+				ShowSyncHudText(client, g_hRandomsMsg2, "Heal Beacon #2 - %N", g_aRandomPlayers.Get(1));
+				SetHudTextParams(0.2, 0.1, 1.0, 0, 128, 128, 255);
+				ShowSyncHudText(client, g_hRandomsMsg3, "Heal Beacon #3 - %N", g_aRandomPlayers.Get(2));
+			}
+			else if(GetCurrentRandoms() == 4)
+			{
+				SetHudTextParams(0.2, 0.0, 1.0, 0, 170, 130, 150);
+				ShowSyncHudText(client, g_hRandomsMsg1, "Heal Beacon #1 - %N", g_aRandomPlayers.Get(0));
+				SetHudTextParams(0.2, 0.05, 1.0, 255, 31, 255, 255);
+				ShowSyncHudText(client, g_hRandomsMsg2, "Heal Beacon #2 - %N", g_aRandomPlayers.Get(1));
+				SetHudTextParams(0.2, 0.1, 1.0, 255, 255, 255, 255);
+				ShowSyncHudText(client, g_hRandomsMsg3, "Heal Beacon #3 - %N", g_aRandomPlayers.Get(2));
+				SetHudTextParams(0.2, 0.15, 1.0, 255, 231, 128, 255);
+				ShowSyncHudText(client, g_hRandomsMsg4, "Heal Beacon #4 - %N", g_aRandomPlayers.Get(3));
+			}
+			else if(GetCurrentRandoms() == 5)
+			{
+				SetHudTextParams(0.2, 0.0, 1.0, 255, 15, 0, 255);
+				ShowSyncHudText(client, g_hRandomsMsg1, "Heal Beacon #1 - %N", g_aRandomPlayers.Get(0));
+				SetHudTextParams(0.2, 0.05, 1.0, 193, 255, 0, 255);
+				ShowSyncHudText(client, g_hRandomsMsg2, "Heal Beacon #2 - %N", g_aRandomPlayers.Get(1));
+				SetHudTextParams(0.2, 0.1, 1.0, 128, 0, 255, 255);
+				ShowSyncHudText(client, g_hRandomsMsg3, "Heal Beacon #3 - %N", g_aRandomPlayers.Get(2));
+				SetHudTextParams(0.2, 0.15, 1.0, 212, 255, 0, 255);
+				ShowSyncHudText(client, g_hRandomsMsg4, "Heal Beacon #4 - %N", g_aRandomPlayers.Get(3));
+				SetHudTextParams(0.2, 0.2, 1.0, 255, 128, 0, 255);
+				ShowSyncHudText(client, g_hRandomsMsg5, "Heal Beacon #5 - %N", g_aRandomPlayers.Get(4));
+			}
+		}		
+		
+		if(IsValidClient(client) && IsPlayerAlive(client) && GetClientTeam(client) == 3 && !g_bIsClientRandom[client])
 		{
 			if(!g_bModeIsEnabled)
 			{
@@ -397,9 +513,17 @@ public Action DistanceChecker_Timer(Handle timer, int clientserial)
 	}
 	else if(GetCurrentRandoms() <= 0)
 	{
+		if(IsValidClient(client) && IsPlayerAlive(client) && GetClientTeam(client) == 3)
+		{
+			DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
+		}
+	}
+
+	if(g_bRoundEnd)
+	{
 		DistanceTimerHandle[client] = null;
 		return Plugin_Stop;
-	}				
+	}
 		
 	return Plugin_Continue;
 }
@@ -772,12 +896,53 @@ public Action Command_CheckDistance(int client, int args)
 	return Plugin_Handled;
 }
 
+public Action Command_HealBeaconHud(int client, int args)
+{
+	if(!client)
+	{
+		ReplyToCommand(client, "Cannot use this command from server rcon");
+		return Plugin_Handled;
+	}
+	
+	if(g_bIsHudEnabled[client])
+	{
+		g_bIsHudEnabled[client] = false;
+	}
+	else if(!g_bIsHudEnabled[client])
+	{
+		g_bIsHudEnabled[client] = true;
+	}
+	
+	CReplyToCommand(client, "{fullred}[Heal Beacon] {white}Heal Beacon Hud has been {yellow}%s", !g_bIsHudEnabled[client] ? "Disabled" : "Enabled");
+	
+	char sValue[2];
+	IntToString(g_bIsHudEnabled[client], sValue, 2);
+	
+	SetClientCookie(client, g_hHudCookie, sValue);
+	
+	return Plugin_Handled;
+}	
+
 public Action Beacon_Timer(Handle timer, int clientserial)
 {
 	int client = GetClientFromSerial(clientserial);
 	
 	if(IsValidClient(client) && IsPlayerAlive(client) && GetClientTeam(client) == 3)
+	{
 		BeaconPlayer(client);
+	}
+	
+	else if(!IsValidClient(client))
+	{
+		BeaconTimer[client] = null;
+		return Plugin_Stop;
+	}
+	
+	if(g_bRoundEnd)
+	{
+		BeaconTimer[client] = null;
+		return Plugin_Stop;
+	}
 		
 	return Plugin_Handled;
 }
@@ -831,10 +996,6 @@ public int Menu_SettingsCallback(Menu menu, MenuAction action, int param1, int p
 				DisplayBeaconTimerMenu(param1);
 			}
 			case 2:
-			{
-				DisplayBeaconLifeTimeMenu(param1);
-			}
-			case 3:
 			{
 				if(!g_bModeIsEnabled)
 				{
@@ -906,33 +1067,6 @@ public int Menu_BeaconTimerCallback(Menu menu, MenuAction action, int param1, in
 		g_cvTimer.FloatValue = num;
 		
 		CPrintToChat(param1, "%sBeacon First PickRandom Timer has been changed to %f", PLUGIN_PREFIX, num);
-	}
-	else if(action == MenuAction_Cancel)
-	{
-		if(param2 == MenuCancel_ExitBack)
-		{
-			DisplaySettingsMenu(param1);
-		}
-	}
-	else if(action == MenuAction_End)
-		delete menu;
-		
-	return 0;
-	
-}
-
-public int Menu_BeaconLifeTimeCallback(Menu menu, MenuAction action, int param1, int param2)
-{
-	if(action == MenuAction_Select)
-	{
-		char buf[32];
-		menu.GetItem(param2, buf, 32);
-		
-		float num = StringToFloat(buf);
-		
-		g_cvLifeTime.FloatValue = num;
-		
-		CPrintToChat(param1, "%sBeacon Life Time has been changed to %f", PLUGIN_PREFIX, num);
 	}
 	else if(action == MenuAction_Cancel)
 	{
@@ -1246,7 +1380,7 @@ public int Menu_BeaconRadiusCallback(Menu menu, MenuAction action, int param1, i
 void BeaconPlayerTimer(int client)
 {	
 		if(IsValidClient(client) && IsPlayerAlive(client) && GetClientTeam(client) == 3)		
-			BeaconTimer[client] = CreateTimer(1.0, Beacon_Timer, GetClientSerial(client), TIMER_REPEAT);
+			BeaconTimer[client] = CreateTimer(0.1, Beacon_Timer, GetClientSerial(client), TIMER_REPEAT);
 }
 
 void BeaconPlayer(int client)
@@ -1257,7 +1391,7 @@ void BeaconPlayer(int client)
 		GetClientAbsOrigin(client, fvec);
 		fvec[2] += 10;
 		
-		TE_SetupBeamRingPoint(fvec, g_fClientDistance[client] - 1.0, g_fClientDistance[client], g_LaserSprite, g_HaloSprite, 0, 2, g_cvLifeTime.FloatValue, 5.0, 0.5, g_iClientBeaconColor[client], 10, 0);
+		TE_SetupBeamRingPoint(fvec, g_fClientDistance[client] - 10.0, g_fClientDistance[client], g_LaserSprite, g_HaloSprite, 0, 15, 0.1, 10.0, 0.0, g_iClientBeaconColor[client], 10, 0);
 		TE_SendToAll();
 			
 		GetClientEyePosition(client, fvec);
@@ -1284,7 +1418,7 @@ void DealDamage(int client, int nDamage, int nDamageType = DMG_GENERIC)
 	if(IsValidClient(client) && IsPlayerAlive(client) && nDamage > 0)
     {
         EntityPointHurt = CreateEntityByName("point_hurt");
-        if(EntityPointHurt != 0)
+        if(EntityPointHurt != -1)
         {
             char sDamage[16];
             IntToString(nDamage, sDamage, sizeof(sDamage));
@@ -1436,7 +1570,6 @@ void DisplaySettingsMenu(int client)
 	
 	menu.AddItem("0", "Change Heal Beacon Damage");
 	menu.AddItem("1", "Change The first pick timer");
-	menu.AddItem("2", "Change Heal Beacon lifetime");
 	menu.AddItem("4", "Toggle better damage mode");
 	
 	menu.ExitBackButton = true;
@@ -1474,23 +1607,6 @@ void DisplayBeaconTimerMenu(int client)
 	menu.AddItem("30", "30");
 	menu.AddItem("40", "40");
 	menu.AddItem("60", "60");
-	
-	menu.ExitBackButton = true;
-	menu.Display(client, MENU_TIME_FOREVER);
-}
-
-void DisplayBeaconLifeTimeMenu(int client)
-{
-	Menu menu = new Menu(Menu_BeaconLifeTimeCallback);
-	char title[64];
-	Format(title, sizeof(title), "Change Heal Beacon Settings");
-	menu.SetTitle(title);
-	
-	menu.AddItem("0.2", "0.2");
-	menu.AddItem("0.4", "0.4");
-	menu.AddItem("0.6", "0.6");
-	menu.AddItem("0.8", "0.8");
-	menu.AddItem("1.0", "1.0");
 	
 	menu.ExitBackButton = true;
 	menu.Display(client, MENU_TIME_FOREVER);
@@ -1710,8 +1826,7 @@ void DoProgressNeonColor(int random, int color[4])
 
 void EndRound()
 {
-	g_hRoundEndTimer = CreateTimer(2.0, RoundEnd_Timer);
-	CPrintToChatAll("%sNo beaconed players found, round ending in 2 seconds and will be considered as a Zombies Win", PLUGIN_PREFIX);
+	CPrintToChatAll("%sNo beaconed players found, All humans will get hurt until they die so hurry up for winning the round!", PLUGIN_PREFIX);
 	g_bNoBeacon = true;
 }
 
@@ -1734,8 +1849,7 @@ void RemoveRandom(int client)
 	g_BeaconPlayer[client] = 0;
 	RemoveNeon(client);
 	BeaconTimer[client] = null;
-	if(BeaconTimer[client] != INVALID_HANDLE)
-		delete BeaconTimer[client];
+	delete BeaconTimer[client];
 }
 
 void ResetValues(int client)
@@ -1746,23 +1860,13 @@ void ResetValues(int client)
 
 void DeleteAllHandles(int client)
 {	
-	BeaconTimer[client] = null;
-	g_hHudTimer[client] = null;
-	g_hDistanceTimer[client] = null;
-	DistanceTimerHandle[client] = null;
+	delete BeaconTimer[client];
 	
-	if(BeaconTimer[client] != INVALID_HANDLE)
-		delete BeaconTimer[client];
-					
-	if(g_hHudTimer[client] != INVALID_HANDLE)
-		delete g_hHudTimer[client];
+	delete g_hHudTimer[client];
+	
+	delete g_hDistanceTimer[client];
 
-					
-	if(g_hDistanceTimer[client] != INVALID_HANDLE)
-		delete g_hDistanceTimer[client];
-						
-	if(DistanceTimerHandle[client] != INVALID_HANDLE)
-		delete DistanceTimerHandle[client];
+	delete DistanceTimerHandle[client];
 }
 
 void CheckDistanceForNoMode(int client, int randomPlayer)
@@ -1786,10 +1890,10 @@ void CheckDistanceForNoMode(int client, int randomPlayer)
 	}
 	else if(GetDistanceBetween(client, randomPlayer) > (g_fClientDistance[randomPlayer] / 2.0) && !g_bCloseToBeacon[client])
 	{
+		SetHudTextParams(-1.0, 0.2, 1.0, 0, 255, 255, 255);
 		g_iHealth[client] = GetEntProp(client, Prop_Send, "m_iHealth");
 		ShowSyncHudText(client, g_HudMsg, "WARNING: YOU ARE TOO FAR AWAY FROM THE BEACONED PLAYERS PLEASE GET CLOSER TO THEM");
 		DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
-		g_bMaxHealth[client] = false;
 		g_bCloseToBeacon[client] = false;
 	}
 }
@@ -1815,10 +1919,10 @@ void CheckDistanceForNoModeForTwo(int client, int randomPlayer0, int randomPlaye
 	}
 	else if(GetDistanceBetween(client, randomPlayer0) > (g_fClientDistance[randomPlayer0] / 2.0) && GetDistanceBetween(client, randomPlayer1) > (g_fClientDistance[randomPlayer1] / 2.0) && !g_bCloseToBeacon[client])
 	{
+		SetHudTextParams(-1.0, 0.2, 1.0, 0, 255, 255, 255);
 		g_iHealth[client] = GetEntProp(client, Prop_Send, "m_iHealth");
 		ShowSyncHudText(client, g_HudMsg, "WARNING: YOU ARE TOO FAR AWAY FROM THE BEACONED PLAYERS PLEASE GET CLOSER TO THEM");
 		DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
-		g_bMaxHealth[client] = false;
 		g_bCloseToBeacon[client] = false;
 	}
 }
@@ -1844,10 +1948,10 @@ void CheckDistanceForNoModeForThree(int client, int randomPlayer0, int randomPla
 	}
 	else if(GetDistanceBetween(client, randomPlayer0) > (g_fClientDistance[randomPlayer0] / 2.0) && GetDistanceBetween(client, randomPlayer1) > (g_fClientDistance[randomPlayer1] / 2.0) && GetDistanceBetween(client, randomPlayer2) > (g_fClientDistance[randomPlayer2] / 2.0) && !g_bCloseToBeacon[client])
 	{
+		SetHudTextParams(-1.0, 0.2, 1.0, 0, 255, 255, 255);
 		g_iHealth[client] = GetEntProp(client, Prop_Send, "m_iHealth");
 		ShowSyncHudText(client, g_HudMsg, "WARNING: YOU ARE TOO FAR AWAY FROM THE BEACONED PLAYERS PLEASE GET CLOSER TO THEM");
 		DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
-		g_bMaxHealth[client] = false;
 		g_bCloseToBeacon[client] = false;
 	}
 }
@@ -1873,10 +1977,10 @@ void CheckDistanceForNoModeForFour(int client, int randomPlayer0, int randomPlay
 	}
 	else if(GetDistanceBetween(client, randomPlayer0) > (g_fClientDistance[randomPlayer0] / 2.0) && GetDistanceBetween(client, randomPlayer1) > (g_fClientDistance[randomPlayer1] / 2.0) && GetDistanceBetween(client, randomPlayer2) > (g_fClientDistance[randomPlayer2] / 2.0) && GetDistanceBetween(client, randomPlayer3) > (g_fClientDistance[randomPlayer3] / 2.0) && !g_bCloseToBeacon[client])
 	{
+		SetHudTextParams(-1.0, 0.2, 1.0, 0, 255, 255, 255);
 		g_iHealth[client] = GetEntProp(client, Prop_Send, "m_iHealth");
 		ShowSyncHudText(client, g_HudMsg, "WARNING: YOU ARE TOO FAR AWAY FROM THE BEACONED PLAYERS PLEASE GET CLOSER TO THEM");
 		DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
-		g_bMaxHealth[client] = false;
 		g_bCloseToBeacon[client] = false;
 	}
 }
@@ -1902,10 +2006,10 @@ void CheckDistanceForNoModeForFive(int client, int randomPlayer0, int randomPlay
 	}
 	else if(GetDistanceBetween(client, randomPlayer0) > (g_fClientDistance[randomPlayer0] / 2.0) && GetDistanceBetween(client, randomPlayer1) > (g_fClientDistance[randomPlayer1] / 2.0) && GetDistanceBetween(client, randomPlayer2) > (g_fClientDistance[randomPlayer2] / 2.0) && GetDistanceBetween(client, randomPlayer3) > (g_fClientDistance[randomPlayer3] / 2.0) && GetDistanceBetween(client, randomPlayer4) > (g_fClientDistance[randomPlayer4] / 2.0) && !g_bCloseToBeacon[client])
 	{
+		SetHudTextParams(-1.0, 0.2, 1.0, 0, 255, 255, 255);
 		g_iHealth[client] = GetEntProp(client, Prop_Send, "m_iHealth");
 		ShowSyncHudText(client, g_HudMsg, "WARNING: YOU ARE TOO FAR AWAY FROM THE BEACONED PLAYERS PLEASE GET CLOSER TO THEM");
 		DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
-		g_bMaxHealth[client] = false;
 		g_bCloseToBeacon[client] = false;
 	}
 }
@@ -1914,6 +2018,7 @@ void CheckDistanceForMode(int client, int randomPlayer)
 {
 	if(GetDistanceBetween(client, randomPlayer) > (g_fClientDistance[randomPlayer] / 2.0))
 	{
+		SetHudTextParams(-1.0, 0.2, 1.0, 0, 255, 255, 255);
 		ShowSyncHudText(client, g_HudMsg, "WARNING: YOU ARE TOO FAR AWAY FROM THE BEACONED PLAYERS PLEASE GET CLOSER TO THEM");
 		DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
 	}
@@ -1923,6 +2028,7 @@ void CheckDistanceForModeForTwo(int client, int randomPlayer0, int randomPlayer1
 {
 	if(GetDistanceBetween(client, randomPlayer0) > (g_fClientDistance[randomPlayer0] / 2.0) && GetDistanceBetween(client, randomPlayer1) > (g_fClientDistance[randomPlayer1] / 2.0))
 	{
+		SetHudTextParams(-1.0, 0.2, 1.0, 0, 255, 255, 255);
 		ShowSyncHudText(client, g_HudMsg, "WARNING: YOU ARE TOO FAR AWAY FROM THE BEACONED PLAYERS PLEASE GET CLOSER TO THEM");
 		DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
 	}
@@ -1932,6 +2038,7 @@ void CheckDistanceForModeForThree(int client, int randomPlayer0, int randomPlaye
 {
 	if(GetDistanceBetween(client, randomPlayer0) > (g_fClientDistance[randomPlayer0] / 2.0) && GetDistanceBetween(client, randomPlayer1) > (g_fClientDistance[randomPlayer1] / 2.0) && GetDistanceBetween(client, randomPlayer2) > (g_fClientDistance[randomPlayer2] / 2.0))
 	{
+		SetHudTextParams(-1.0, 0.2, 1.0, 0, 255, 255, 255);
 		ShowSyncHudText(client, g_HudMsg, "WARNING: YOU ARE TOO FAR AWAY FROM THE BEACONED PLAYERS PLEASE GET CLOSER TO THEM");
 		DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
 	}
@@ -1941,6 +2048,7 @@ void CheckDistanceForModeForFour(int client, int randomPlayer0, int randomPlayer
 {
 	if(GetDistanceBetween(client, randomPlayer0) > (g_fClientDistance[randomPlayer0] / 2.0) && GetDistanceBetween(client, randomPlayer1) > (g_fClientDistance[randomPlayer1] / 2.0) && GetDistanceBetween(client, randomPlayer2) > (g_fClientDistance[randomPlayer2] / 2.0) && GetDistanceBetween(client, randomPlayer3) > (g_fClientDistance[randomPlayer3] / 2.0))
 	{
+		SetHudTextParams(-1.0, 0.2, 1.0, 0, 255, 255, 255);
 		ShowSyncHudText(client, g_HudMsg, "WARNING: YOU ARE TOO FAR AWAY FROM THE BEACONED PLAYERS PLEASE GET CLOSER TO THEM");
 		DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
 	}
@@ -1950,6 +2058,7 @@ void CheckDistanceForModeForFive(int client, int randomPlayer0, int randomPlayer
 {
 	if(GetDistanceBetween(client, randomPlayer0) > (g_fClientDistance[randomPlayer0] / 2.0) && GetDistanceBetween(client, randomPlayer1) > (g_fClientDistance[randomPlayer1] / 2.0) && GetDistanceBetween(client, randomPlayer2) > (g_fClientDistance[randomPlayer2] / 2.0) && GetDistanceBetween(client, randomPlayer3) > (g_fClientDistance[randomPlayer3] / 2.0) && GetDistanceBetween(client, randomPlayer4) > (g_fClientDistance[randomPlayer4] / 2.0))
 	{
+		SetHudTextParams(-1.0, 0.2, 1.0, 0, 255, 255, 255);
 		ShowSyncHudText(client, g_HudMsg, "WARNING: YOU ARE TOO FAR AWAY FROM THE BEACONED PLAYERS PLEASE GET CLOSER TO THEM");
 		DealDamage(client, g_cvDamage.IntValue, DMG_GENERIC);
 	}
