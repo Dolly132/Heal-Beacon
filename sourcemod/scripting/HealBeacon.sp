@@ -1,18 +1,17 @@
 #pragma semicolon 1
 #pragma newdecls required
 
-
 #include <sourcemod>
 #include <sdktools>
 #include <sdkhooks>
 #include <cstrike>
 #include <multicolors>
-#include <zombiereloaded>
 #include <adminmenu>
 #include <clientprefs>
 #include <HealBeacon>
 
-#define PLUGIN_DESCRIPTION "Sets beacon to 2 random players and damage whoever is far from them"
+#define PLUGIN_DESCRIPTION "Sets beacon to random players and damage whoever is far from them"
+#define PLUGIN_VERSION "1.001"
 #define PLUGIN_PREFIX "{fullred}[Heal Beacon] {white}"
 
 int g_LaserSprite = -1;
@@ -31,6 +30,7 @@ float g_fClientDistance[MAXPLAYERS+1] = {1.0, ...};
 
 int iCount[MAXPLAYERS+1] = {0, ...};
 int iCountdown = 10;
+
 
 
 int g_BeaconColor[4] =  {255, 56, 31, 255};
@@ -77,6 +77,14 @@ Handle g_hDistanceTimer[MAXPLAYERS+1] = {INVALID_HANDLE, ...};
 Handle g_hRandomsTimer = INVALID_HANDLE;
 Handle g_hHudCookie = INVALID_HANDLE;
 
+public Plugin myinfo = 
+{
+	name = "HealBeacon",
+	author = "Dolly",
+	description = PLUGIN_DESCRIPTION,
+	version = PLUGIN_VERSION,
+	url = "https://nide.gg"
+};
 
 public void OnPluginStart()
 {
@@ -110,6 +118,7 @@ public void OnPluginStart()
 	g_hRandomsMsg4 = CreateHudSynchronizer();
 	g_hRandomsMsg5 = CreateHudSynchronizer();
 	
+	LoadTranslations("common.phrases");
 	
 	for (int i = 1; i <= MaxClients; i++)
 	{
@@ -190,7 +199,6 @@ public Action Event_RoundStart(Event event, const char[] name, bool dontBroadcas
 	g_bNoBeacon = false;
 	
 	iRandomsCount = 0;
-	
 	
 	if(GetConVarBool(g_cvEnabled))
 	{
@@ -280,7 +288,7 @@ public Action Event_PlayerTeam(Event event, const char[] name, bool dontBroadcas
 	}
 	
 	return Plugin_Continue;
-}
+} 
 	
 public Action RoundStart_Timer(Handle timer)
 {
@@ -927,7 +935,7 @@ public Action Beacon_Timer(Handle timer, int clientserial)
 {
 	int client = GetClientFromSerial(clientserial);
 	
-	if(IsValidClient(client) && IsPlayerAlive(client) && GetClientTeam(client) == 3)
+	if(IsClientRandom(client))
 	{
 		BeaconPlayer(client);
 	}
@@ -944,7 +952,7 @@ public Action Beacon_Timer(Handle timer, int clientserial)
 		return Plugin_Stop;
 	}
 		
-	return Plugin_Handled;
+	return Plugin_Continue;
 }
 
 public int Menu_MainCallback(Menu menu, MenuAction action, int param1, int param2)
@@ -962,9 +970,18 @@ public int Menu_MainCallback(Menu menu, MenuAction action, int param1, int param
 		{
 			DisplayActionsMenu(param1, random);
 		}
-		else
+		else if(!IsValidClient(random))
 		{
-			CPrintToChat(param1, "%sPlayer is dead or left the game", PLUGIN_PREFIX);
+			char item[32];
+			menu.GetItem(param2, item, 32);
+			if(StrEqual(item, "option2"))
+			{
+				return 0;
+			}
+			else
+			{
+				CPrintToChat(param1, "%sPlayer is dead or left the game", PLUGIN_PREFIX);
+			}
 		}
 		
 		char item[32];
